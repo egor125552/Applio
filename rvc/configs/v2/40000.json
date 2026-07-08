@@ -8,7 +8,7 @@
             0.99
         ],
         "eps": 1e-09,
-        "fp16_run": true,
+        "fp16_run": false,
         "lr_decay": 0.999875,
         "segment_size": 12800,
         "c_mel": 45,

@@ -36,6 +36,7 @@ transformers==4.44.2
 scikit-learn
 local-attention
 ring-attention-pytorch
+vocos
 
 # Visualization and UI
 matplotlib==3.7.2
@@ -52,4 +53,3 @@ pypresence
 beautifulsoup4
 flask
 treon
-vocos
