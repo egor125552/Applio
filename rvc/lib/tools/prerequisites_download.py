@@ -57,20 +57,50 @@ folder_mapping_list = {
     "formant/": "rvc/models/formant/",
 }
 
+REQUEST_TIMEOUT = (15, 120)
+
+
+def file_is_ready(path):
+    """Return true only for an existing, non-empty downloaded file."""
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def mapping_destinations(file_mapping_list):
+    """Yield each remote resource together with its expected local path."""
+    for remote_folder, files in file_mapping_list:
+        local_folder = folder_mapping_list.get(remote_folder, "")
+        for file in files:
+            yield remote_folder, file, os.path.join(local_folder, file)
+
+
+def verify_downloads(file_mapping_list):
+    """Fail instead of reporting a successful install with missing model files."""
+    missing = [
+        destination_path
+        for _, _, destination_path in mapping_destinations(file_mapping_list)
+        if not file_is_ready(destination_path)
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "Required Applio resources are missing or empty:\n" + "\n".join(missing)
+        )
+
 
 def get_file_size_if_missing(file_list):
     """
     Calculate the total size of files to be downloaded only if they do not exist locally.
     """
     total_size = 0
-    for remote_folder, files in file_list:
-        local_folder = folder_mapping_list.get(remote_folder, "")
-        for file in files:
-            destination_path = os.path.join(local_folder, file)
-            if not os.path.exists(destination_path):
-                url = f"{url_base}/{remote_folder}{file}"
-                response = requests.head(url)
-                total_size += int(response.headers.get("content-length", 0))
+    for remote_folder, file, destination_path in mapping_destinations(file_list):
+        if not file_is_ready(destination_path):
+            url = f"{url_base}/{remote_folder}{file}"
+            response = requests.head(
+                url,
+                allow_redirects=True,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            total_size += int(response.headers.get("content-length", 0))
     return total_size
 
 
@@ -83,12 +113,33 @@ def download_file(url, destination_path, global_bar):
     dir_name = os.path.dirname(destination_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    response = requests.get(url, stream=True)
+    temporary_path = f"{destination_path}.part"
+    response = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    expected_size = int(response.headers.get("content-length", 0))
+    downloaded_size = 0
     block_size = 1024
-    with open(destination_path, "wb") as file:
-        for data in response.iter_content(block_size):
-            file.write(data)
-            global_bar.update(len(data))
+    try:
+        with open(temporary_path, "wb") as file:
+            for data in response.iter_content(block_size):
+                if not data:
+                    continue
+                file.write(data)
+                downloaded_size += len(data)
+                global_bar.update(len(data))
+
+        if downloaded_size == 0:
+            raise IOError(f"Downloaded an empty response from {url}")
+        if expected_size and downloaded_size != expected_size:
+            raise IOError(
+                f"Incomplete download from {url}: expected {expected_size} bytes, "
+                f"got {downloaded_size}"
+            )
+        os.replace(temporary_path, destination_path)
+    except Exception:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        raise
 
 
 def download_mapping_files(file_mapping_list, global_bar):
@@ -98,17 +149,14 @@ def download_mapping_files(file_mapping_list, global_bar):
     """
     with ThreadPoolExecutor() as executor:
         futures = []
-        for remote_folder, file_list in file_mapping_list:
-            local_folder = folder_mapping_list.get(remote_folder, "")
-            for file in file_list:
-                destination_path = os.path.join(local_folder, file)
-                if not os.path.exists(destination_path):
-                    url = f"{url_base}/{remote_folder}{file}"
-                    futures.append(
-                        executor.submit(
-                            download_file, url, destination_path, global_bar
-                        )
-                    )
+        for remote_folder, file, destination_path in mapping_destinations(
+            file_mapping_list
+        ):
+            if not file_is_ready(destination_path):
+                url = f"{url_base}/{remote_folder}{file}"
+                futures.append(
+                    executor.submit(download_file, url, destination_path, global_bar)
+                )
         for future in futures:
             future.result()
 
@@ -198,5 +246,17 @@ def prequisites_download_pipeline(
                 download_mapping_files(pretraineds_v2_f0_list, global_bar)
             if pretraineds_v2_nof0:
                 download_mapping_files(pretraineds_v2_nof0_list, global_bar)
-    else:
-        pass
+
+    selected_mappings = []
+    if models:
+        selected_mappings.extend(models_list)
+        selected_mappings.extend(embedders_list)
+    if pretraineds_v1_f0:
+        selected_mappings.extend(pretraineds_v1_f0_list)
+    if pretraineds_v1_nof0:
+        selected_mappings.extend(pretraineds_v1_nof0_list)
+    if pretraineds_v2_f0:
+        selected_mappings.extend(pretraineds_v2_f0_list)
+    if pretraineds_v2_nof0:
+        selected_mappings.extend(pretraineds_v2_nof0_list)
+    verify_downloads(selected_mappings)

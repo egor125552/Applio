@@ -43,7 +43,7 @@ class VocodersNotebookTests(unittest.TestCase):
         self.assertIn(
             'REPO_URL = "https://github.com/egor125552/Applio.git"', self.code
         )
-        self.assertIn('BRANCH = "exp/vocoders"', self.code)
+        self.assertIn('BRANCH = "agent/vocoders-colab"', self.code)
         self.assertIn('"--branch",\n            BRANCH', self.code)
 
     def test_setup_is_idempotent_and_checks_failures(self):
