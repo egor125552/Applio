@@ -37,6 +37,12 @@ class ProgressBar:
     def update(self, size):
         self.total += size
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
 
 class PrerequisitesDownloadTests(unittest.TestCase):
     def test_cli_does_not_report_success_after_a_download_failure(self):
@@ -135,6 +141,33 @@ class PrerequisitesDownloadTests(unittest.TestCase):
             timeout=downloader.REQUEST_TIMEOUT,
         )
         response.raise_for_status.assert_called_once()
+
+    def test_missing_models_are_downloaded_when_server_omits_content_length(self):
+        progress = ProgressBar()
+        with patch.object(downloader, "models_list", [("models/", ["model.pth"])]), patch.object(
+            downloader, "embedders_list", []
+        ), patch.object(
+            downloader, "get_file_size_if_missing", return_value=0
+        ), patch.object(
+            downloader, "download_mapping_files"
+        ) as download_mapping_files, patch.object(
+            downloader, "verify_downloads"
+        ) as verify_downloads, patch.object(
+            downloader, "tqdm", return_value=progress
+        ):
+            downloader.prequisites_download_pipeline(
+                pretraineds_v1_f0=False,
+                pretraineds_v1_nof0=False,
+                pretraineds_v2_f0=False,
+                pretraineds_v2_nof0=False,
+                models=True,
+                exe=False,
+            )
+
+        download_mapping_files.assert_called_once_with(
+            [("models/", ["model.pth"])], progress
+        )
+        verify_downloads.assert_called_once_with([("models/", ["model.pth"])])
 
 
 if __name__ == "__main__":

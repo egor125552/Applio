@@ -217,36 +217,6 @@ def prequisites_download_pipeline(
     """
     Manage the download pipeline for different categories of files.
     """
-    total_size = calculate_total_size(
-        pretraineds_v1_f0_list if pretraineds_v1_f0 else [],
-        pretraineds_v1_nof0_list if pretraineds_v1_nof0 else [],
-        pretraineds_v2_f0_list if pretraineds_v2_f0 else [],
-        pretraineds_v2_nof0_list if pretraineds_v2_nof0 else [],
-        models,
-        exe,
-    )
-
-    if total_size > 0:
-        with tqdm(
-            total=total_size, unit="iB", unit_scale=True, desc="Downloading all files"
-        ) as global_bar:
-            if models:
-                download_mapping_files(models_list, global_bar)
-                download_mapping_files(embedders_list, global_bar)
-            if exe:
-                if os.name == "nt":
-                    download_mapping_files(executables_list, global_bar)
-                else:
-                    print("No executables needed")
-            if pretraineds_v1_f0:
-                download_mapping_files(pretraineds_v1_f0_list, global_bar)
-            if pretraineds_v1_nof0:
-                download_mapping_files(pretraineds_v1_nof0_list, global_bar)
-            if pretraineds_v2_f0:
-                download_mapping_files(pretraineds_v2_f0_list, global_bar)
-            if pretraineds_v2_nof0:
-                download_mapping_files(pretraineds_v2_nof0_list, global_bar)
-
     selected_mappings = []
     if models:
         selected_mappings.extend(models_list)
@@ -259,4 +229,23 @@ def prequisites_download_pipeline(
         selected_mappings.extend(pretraineds_v2_f0_list)
     if pretraineds_v2_nof0:
         selected_mappings.extend(pretraineds_v2_nof0_list)
+
+    # A server may legitimately omit Content-Length. That must not skip GET.
+    total_size = get_file_size_if_missing(selected_mappings)
+    if selected_mappings:
+        with tqdm(
+            total=total_size or None,
+            unit="iB",
+            unit_scale=True,
+            desc="Downloading all files",
+        ) as global_bar:
+            download_mapping_files(selected_mappings, global_bar)
+
+    if exe:
+        if os.name == "nt":
+            with tqdm(unit="iB", unit_scale=True, desc="Downloading executables") as global_bar:
+                download_mapping_files(executables_list, global_bar)
+        else:
+            print("No executables needed")
+
     verify_downloads(selected_mappings)
