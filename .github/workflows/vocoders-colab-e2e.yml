@@ -1,6 +1,13 @@
 name: Vocoders Colab end-to-end
 
 on:
+  pull_request:
+    branches:
+      - exp/vocoders
+    paths:
+      - "assets/Applio_Vocoders.ipynb"
+      - "tests/test_applio_vocoders_notebook.py"
+      - ".github/workflows/vocoders-colab-e2e.yml"
   push:
     branches:
       - fix/vocoders-colab
