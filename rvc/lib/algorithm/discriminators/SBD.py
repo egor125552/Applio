@@ -7,7 +7,7 @@ from torch.nn import Conv1d
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List
 
-from rvc.lib.algorithm.pqmf import PQMF
+from rvc.lib.algorithm.generators.modules.pqmf import PQMF
 
 def get_padding(kernel_size, dilation=1):
     return int((kernel_size*dilation - dilation)/2)

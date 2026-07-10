@@ -4,7 +4,7 @@ from torch.nn.utils import remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 from typing import Optional
 
-from rvc.lib.algorithm.generators import SineGenerator
+from rvc.lib.algorithm.generators.hifigan import SineGenerator
 from rvc.lib.algorithm.residuals import LRELU_SLOPE, ResBlock
 from rvc.lib.algorithm.commons import init_weights
 

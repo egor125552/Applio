@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.parametrizations import weight_norm
 
-from rvc.lib.algorithm.pqmf import PQMF
+from rvc.lib.algorithm.generators.modules.pqmf import PQMF
 
 class MBD1(nn.Module):
     def __init__(self):

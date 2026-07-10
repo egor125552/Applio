@@ -355,7 +355,7 @@ def run(
     )
 
     # Initialize models and optimizers
-    from rvc.lib.algorithm.discriminators.discriminators import MultiPeriodDiscriminator
+    from rvc.lib.algorithm.discriminators.mpd import MultiPeriodDiscriminator
     from rvc.lib.algorithm.synthesizers import Synthesizer
 
     net_g = Synthesizer(
