@@ -1,0 +1,87 @@
+name: Vocoders temporary PR end-to-end
+
+on:
+  pull_request:
+    branches:
+      - exp/vocoders
+
+permissions:
+  contents: read
+
+jobs:
+  run-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Prepare root notebook runner
+        run: |
+          PYTHON_BIN="$(which python)"
+          sudo -H "$PYTHON_BIN" -m pip install --upgrade pip
+          sudo -H "$PYTHON_BIN" -m pip install pytest nbformat nbclient ipykernel
+          sudo -H "$PYTHON_BIN" -m ipykernel install --user --name ci-python --display-name "CI Python"
+          sudo mkdir -p /content
+
+      - name: Run notebook structure tests
+        run: python -m pytest -q tests/test_applio_vocoders_notebook.py
+
+      - name: Execute every notebook cell as root
+        run: |
+          cat > /tmp/execute_vocoders_notebook.py <<'PY'
+          from pathlib import Path
+          import nbformat
+          from nbclient import NotebookClient
+
+          source = Path("assets/Applio_Vocoders.ipynb").resolve()
+          report = Path("/content/Applio_Vocoders.ci.executed.ipynb")
+          notebook = nbformat.read(source, as_version=4)
+          client = NotebookClient(
+              notebook,
+              timeout=2700,
+              kernel_name="ci-python",
+              resources={"metadata": {"path": str(source.parent.parent)}},
+              allow_errors=False,
+          )
+          client.execute()
+          nbformat.write(notebook, report)
+          print(f"Executed notebook: {report}")
+          PY
+          PYTHON_BIN="$(which python)"
+          sudo -H -E env APPLIO_CI=1 "$PYTHON_BIN" /tmp/execute_vocoders_notebook.py
+
+      - name: Verify background server
+        run: |
+          test -s /content/applio-vocoders.pid
+          test -s /content/applio-vocoders.port
+          PID="$(cat /content/applio-vocoders.pid)"
+          PORT="$(cat /content/applio-vocoders.port)"
+          sudo kill -0 "$PID"
+          curl --fail --retry 20 --retry-delay 3 --retry-connrefused "http://127.0.0.1:${PORT}/"
+          echo "Server PID ${PID} is alive on port ${PORT}"
+
+      - name: Stop background server
+        if: always()
+        run: |
+          if test -s /content/applio-vocoders.pid; then
+            PID="$(cat /content/applio-vocoders.pid)"
+            sudo kill -- "-${PID}" 2>/dev/null || true
+          fi
+
+      - name: Upload reports and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocoders-colab-e2e
+          if-no-files-found: ignore
+          path: |
+            /content/Applio_Vocoders.ci.executed.ipynb
+            /content/applio-vocoders-smoke.executed.ipynb
+            /content/applio-vocoders.log
