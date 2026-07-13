@@ -29,6 +29,7 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Add a clean Colab notebook for the registry branch; no tests are embedded in it.
 - [x] Add separate notebook JSON, syntax, branch, log-button, and clean-output tests.
 - [x] Add GitHub Actions checks for the registry and notebook.
+- [x] Pass the GitHub Actions registry and notebook job on the real repository.
 - [ ] Confirm a real conversion in Colab using the registry branch and compare it with the previously confirmed stable baseline.
 
 ## Experiment 2 — Roughness Adapter
@@ -42,4 +43,4 @@ This checklist records completed engineering steps separately from the long-form
 
 ## Current gate
 
-Experiment 1 is code-complete after CI passes. It is acoustically closed only after one real Colab conversion from the registry notebook succeeds and its output is compared with the previously confirmed stable baseline.
+Experiment 1 is code-complete: local tests and GitHub CI pass. It becomes acoustically closed after one real Colab conversion from the registry notebook succeeds and is compared with the previously confirmed stable baseline.
