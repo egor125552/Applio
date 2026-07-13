@@ -30,6 +30,7 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Add separate notebook JSON, syntax, branch, log-button, and clean-output tests.
 - [x] Add GitHub Actions checks for the registry and notebook.
 - [x] Pass the GitHub Actions registry and notebook job on the real repository.
+- [x] Fix silent Colab startup: unbuffered app output, live progress, port detection, and Colab proxy fallback.
 - [ ] Confirm a real conversion in Colab using the registry branch and compare it with the previously confirmed stable baseline.
 
 ## Experiment 2 — Roughness Adapter
