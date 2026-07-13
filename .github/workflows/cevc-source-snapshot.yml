@@ -24,6 +24,7 @@ jobs:
             tabs
             tests
             app.py
+            core.py
             requirements.txt
             pyproject.toml
           include-hidden-files: true
