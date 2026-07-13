@@ -69,3 +69,5 @@ This checklist records completed engineering steps separately from the long-form
 ## Current gate
 
 Experiment 1 is closed. Experiment 2 now has a repository-tested engineering path for source-label preservation, expressive extraction, frozen-base adapter training, separate checkpoints, and a Train UI that reuses the current experiment settings. The expanded GitHub Actions suite passes. The next gate is one real Tesla T4 extraction/training run before inference controls and acoustic claims are closed.
+
+Latest full validation rerun: GitHub Actions run `29283541335` (triggered after dataset/checkpoint robustness fixes).
