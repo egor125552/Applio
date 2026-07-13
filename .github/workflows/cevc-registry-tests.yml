@@ -1,4 +1,4 @@
-name: CEVC registry checks
+name: CEVC checks
 
 on:
   push:
@@ -6,20 +6,34 @@ on:
       - agent/compact-expressive-vc-architecture
   pull_request:
     paths:
+      - "core.py"
+      - "tabs/train/train.py"
       - "rvc/lib/algorithm/generators/**"
+      - "rvc/lib/algorithm/cevc/**"
       - "rvc/lib/algorithm/synthesizers.py"
+      - "rvc/train/cevc/**"
+      - "rvc/train/extract/**"
+      - "rvc/train/preprocess/preprocess.py"
       - "tests/test_generator_registry.py"
       - "tests/test_cevc_notebook.py"
+      - "tests/test_cevc_adapter_notebook.py"
+      - "tests/test_roughness_adapter.py"
+      - "tests/test_expressive_features.py"
+      - "tests/test_cevc_training_integration.py"
       - "assets/Applio_CEVC_Registry.ipynb"
+      - "assets/Applio_CEVC_Adapter.ipynb"
       - ".github/workflows/cevc-registry-tests.yml"
 
 permissions:
   contents: read
 
 jobs:
-  registry-and-notebook:
+  cevc-code-and-notebooks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,14 +45,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy
           python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-      - name: Compile changed Python modules
+      - name: Compile CEVC Python modules
         run: |
           python -m py_compile \
+            core.py \
+            tabs/train/train.py \
             rvc/lib/algorithm/generators/registry.py \
+            rvc/lib/algorithm/cevc/roughness_adapter.py \
+            rvc/lib/algorithm/cevc/checkpoint.py \
             rvc/lib/algorithm/synthesizers.py \
+            rvc/train/cevc/data.py \
+            rvc/train/cevc/train_adapter.py \
+            rvc/train/extract/expressive.py \
+            rvc/train/extract/extract.py \
+            rvc/train/preprocess/preprocess.py \
             tests/test_generator_registry.py \
-            tests/test_cevc_notebook.py
+            tests/test_cevc_notebook.py \
+            tests/test_cevc_adapter_notebook.py \
+            tests/test_roughness_adapter.py \
+            tests/test_expressive_features.py \
+            tests/test_cevc_training_integration.py
       - name: Run generator registry tests
         run: python -m unittest tests.test_generator_registry -v
-      - name: Validate Colab notebook
-        run: python -m unittest tests.test_cevc_notebook -v
+      - name: Run Roughness Adapter tests
+        run: python -m unittest tests.test_roughness_adapter -v
+      - name: Run expressive feature tests
+        run: python -m unittest tests.test_expressive_features -v
+      - name: Run CEVC training integration tests
+        run: python -m unittest tests.test_cevc_training_integration -v
+      - name: Validate Colab notebooks
+        run: |
+          python -m unittest tests.test_cevc_notebook -v
+          python -m unittest tests.test_cevc_adapter_notebook -v
