@@ -1,0 +1,35 @@
+name: Apply CEVC new files
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Decode and apply new-file patch
+        run: |
+          cat .cevc-new/part* | base64 -d | gzip -d > /tmp/cevc-new-files.patch
+          git apply --check /tmp/cevc-new-files.patch
+          git apply /tmp/cevc-new-files.patch
+      - name: Remove temporary payload
+        run: rm -rf .cevc-new
+      - name: Commit CEVC new files
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add CEVC adapter modules and tests"
+          git push origin "HEAD:${TARGET_BRANCH}"
