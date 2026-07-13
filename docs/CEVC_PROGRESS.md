@@ -31,7 +31,18 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Add GitHub Actions checks for the registry and notebook.
 - [x] Pass the GitHub Actions registry and notebook job on the real repository.
 - [x] Fix silent Colab startup: unbuffered app output, live progress, port detection, and Colab proxy fallback.
-- [ ] Confirm a real conversion in Colab using the registry branch and compare it with the previously confirmed stable baseline.
+- [x] Confirm real Colab inference on the registry branch with the standard HiFi-GAN path.
+
+### Real Colab registry result
+
+- Environment: Tesla T4, PyTorch 2.7.1+cu128, CUDA 12.8.
+- Research commit tested: `e4f3ba9bfdfc1fcb9e239b871f025349029e6048`.
+- Standard checkpoint detected: RVC v2, F0 enabled, 40 kHz, HiFi-GAN, 27,537,346 parameters.
+- Cold conversion: 54.68 seconds.
+- Warm conversion with the model already loaded: 16.65 seconds.
+- Peak observed GPU memory: 5,259 MiB.
+- Idle/loaded application GPU memory: about 1,176–1,400 MiB.
+- Installation commands exited successfully; no traceback or conversion failure was recorded.
 
 ## Experiment 2 — Roughness Adapter
 
@@ -44,4 +55,4 @@ This checklist records completed engineering steps separately from the long-form
 
 ## Current gate
 
-Experiment 1 is code-complete: local tests and GitHub CI pass. It becomes acoustically closed after one real Colab conversion from the registry notebook succeeds and is compared with the previously confirmed stable baseline.
+Experiment 1 is closed: constructor compatibility tests, CPU tests, GitHub CI, notebook validation, server startup, model discovery, and real Tesla T4 inference all pass. The next architecture step is Experiment 2: a disabled-by-default Roughness Adapter whose zero setting preserves the baseline path.
