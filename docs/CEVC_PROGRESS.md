@@ -61,7 +61,7 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Reuse the current Train UI model name, epochs, batch size, GPU, sample rate, vocoder, save interval, and checkpointing settings.
 - [x] Add data validation and adapter-only training buttons without a second model selector.
 - [x] Add a clean CEVC Adapter Colab notebook and standalone module/integration/notebook tests.
-- [x] Pass the expanded CEVC GitHub Actions job (`29281872700`).
+- [x] Pass the expanded CEVC GitHub Actions job (`29283738664`).
 - [ ] Run the first real adapter training on the uploaded clean/rough/mixed recordings.
 - [ ] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` A/B controls in inference.
 - [ ] Add audio and metric comparison against the baseline.
