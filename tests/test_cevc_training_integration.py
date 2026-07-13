@@ -1,6 +1,9 @@
 import ast
+import math
 import unittest
 from pathlib import Path
+
+from rvc.train.cevc.progress import BestLossTracker
 
 
 class CEVCTrainingIntegrationTests(unittest.TestCase):
@@ -23,6 +26,7 @@ class CEVCTrainingIntegrationTests(unittest.TestCase):
             "rvc/lib/algorithm/cevc/roughness_adapter.py",
             "rvc/lib/algorithm/cevc/checkpoint.py",
             "rvc/train/cevc/data.py",
+            "rvc/train/cevc/progress.py",
             "rvc/train/cevc/train_adapter.py",
             "rvc/train/extract/expressive.py",
             "rvc/train/extract/extract.py",
@@ -40,7 +44,7 @@ class CEVCTrainingIntegrationTests(unittest.TestCase):
         self.assertIn("extract_cevc_features: bool = True", self.core)
 
     def test_adapter_ui_has_no_second_model_selector(self):
-        marker = '# CEVC Roughness Adapter section.'
+        marker = "# CEVC Roughness Adapter section."
         section = self.ui.split(marker, 1)[1].split("# Export Model section", 1)[0]
         self.assertNotIn("gr.Dropdown", section)
         self.assertIn("Train Roughness Adapter", section)
@@ -77,6 +81,30 @@ class CEVCTrainingIntegrationTests(unittest.TestCase):
         self.assertIn(".cevc.pth", self.trainer)
         self.assertIn("--validate-only", self.trainer)
         self.assertIn('validation["base_checkpoint"]', self.trainer)
+
+    def test_trainer_tracks_and_exports_the_best_loss_epoch(self):
+        self.assertIn("BestLossTracker()", self.trainer)
+        self.assertIn('"best_loss": best.value', self.trainer)
+        self.assertIn('"best_epoch": best.epoch', self.trainer)
+        self.assertIn("roughness_adapter_best.pth", self.trainer)
+        self.assertIn("adapter.load_state_dict(best_state)", self.trainer)
+        self.assertIn("NEW BEST", self.trainer)
+
+    def test_best_loss_tracker_uses_the_lowest_finite_loss(self):
+        tracker = BestLossTracker()
+        self.assertTrue(tracker.update(2.0, 1))
+        self.assertFalse(tracker.update(2.5, 2))
+        self.assertTrue(tracker.update(1.25, 3))
+        self.assertEqual(tracker.epoch, 3)
+        self.assertAlmostEqual(tracker.value, 1.25)
+
+    def test_best_loss_tracker_rejects_invalid_values(self):
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value):
+                with self.assertRaises(FloatingPointError):
+                    BestLossTracker().update(value, 1)
+        with self.assertRaises(ValueError):
+            BestLossTracker().update(1.0, 0)
 
 
 if __name__ == "__main__":
