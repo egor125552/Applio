@@ -49,6 +49,15 @@ class CEVCCollabNotebookTests(unittest.TestCase):
         self.assertIn("gpu_usage.csv", self.raw)
         self.assertIn("followlinks", self.raw)
 
+    def test_server_start_is_unbuffered_and_reports_progress(self):
+        self.assertIn('"-u"', self.raw)
+        self.assertIn("PYTHONUNBUFFERED", self.raw)
+        self.assertIn("bufsize=1", self.raw)
+        self.assertIn("flush=True", self.raw)
+        self.assertIn("kernel.proxyPort(6969)", self.raw)
+        self.assertIn("порт 6969", self.raw)
+        self.assertNotIn("startup_timeout = 180", self.raw)
+
     def test_notebook_is_clean_for_users(self):
         for cell in self.notebook["cells"]:
             if cell["cell_type"] == "code":
