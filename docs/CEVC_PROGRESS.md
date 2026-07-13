@@ -57,6 +57,7 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Ignore hidden macOS metadata files and make CEVC data validation require a real `G_*.pth` base checkpoint.
 - [x] Extract energy, spectral tilt, HNR, band aperiodicity, and F0 instability from the existing Extract step.
 - [x] Add automatic clean/rough/mixed filename hints and a per-frame roughness manifest.
+- [x] Validate the uploaded Russian clean/rough/mixed iPhone filenames and confirm ordered roughness ranges.
 - [x] Reuse the current Train UI model name, epochs, batch size, GPU, sample rate, vocoder, save interval, and checkpointing settings.
 - [x] Add data validation and adapter-only training buttons without a second model selector.
 - [x] Add a clean CEVC Adapter Colab notebook and standalone module/integration/notebook tests.
