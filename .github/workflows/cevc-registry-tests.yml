@@ -1,0 +1,44 @@
+name: CEVC registry checks
+
+on:
+  push:
+    branches:
+      - agent/compact-expressive-vc-architecture
+  pull_request:
+    paths:
+      - "rvc/lib/algorithm/generators/**"
+      - "rvc/lib/algorithm/synthesizers.py"
+      - "tests/test_generator_registry.py"
+      - "tests/test_cevc_notebook.py"
+      - "assets/Applio_CEVC_Registry.ipynb"
+      - ".github/workflows/cevc-registry-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  registry-and-notebook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install minimal test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile changed Python modules
+        run: |
+          python -m py_compile \
+            rvc/lib/algorithm/generators/registry.py \
+            rvc/lib/algorithm/synthesizers.py \
+            tests/test_generator_registry.py \
+            tests/test_cevc_notebook.py
+      - name: Run generator registry tests
+        run: python -m unittest tests.test_generator_registry -v
+      - name: Validate Colab notebook
+        run: python -m unittest tests.test_cevc_notebook -v
