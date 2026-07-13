@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import shutil
 import os
 import re
 import sys
@@ -26,6 +27,7 @@ from rvc.lib.algorithm import commons  # noqa: E402
 from rvc.lib.algorithm.cevc.checkpoint import save_adapter_checkpoint  # noqa: E402
 from rvc.lib.algorithm.synthesizers import Synthesizer  # noqa: E402
 from rvc.train.cevc.data import CEVCTextAudioCollate, CEVCTextAudioLoader  # noqa: E402
+from rvc.train.cevc.progress import BestLossTracker  # noqa: E402
 
 
 def _checkpoint_epoch(path: str) -> int:
@@ -162,6 +164,15 @@ def build_frozen_synthesizer(
     return model, config
 
 
+def _snapshot_state_dict(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Copy a compact module state to CPU so the best epoch can be restored."""
+
+    return {
+        name: tensor.detach().cpu().clone()
+        for name, tensor in module.state_dict().items()
+    }
+
+
 def train(args) -> str:
     experiment_dir = os.path.join(str(ROOT), "logs", args.model_name)
     validation = validate_dataset(experiment_dir)
@@ -211,6 +222,9 @@ def train(args) -> str:
 
     manifest = load_manifest(experiment_dir)
     history = []
+    best = BestLossTracker()
+    best_state = None
+
     for epoch in range(1, args.epochs + 1):
         running = 0.0
         batches = 0
@@ -293,9 +307,23 @@ def train(args) -> str:
             batches += 1
 
         average_loss = running / max(batches, 1)
-        history.append({"epoch": epoch, "loss": average_loss})
+        is_best = best.update(average_loss, epoch)
+        if is_best:
+            best_state = _snapshot_state_dict(adapter)
+
+        history.append(
+            {
+                "epoch": epoch,
+                "loss": average_loss,
+                "best_loss": best.value,
+                "best_epoch": best.epoch,
+                "is_best": is_best,
+            }
+        )
+        best_marker = " | NEW BEST" if is_best else ""
         print(
-            f"CEVC epoch {epoch}/{args.epochs} | loss={average_loss:.6f}",
+            f"CEVC epoch {epoch}/{args.epochs} | loss={average_loss:.6f} | "
+            f"best_loss={best.value:.6f} | best_epoch={best.epoch}{best_marker}",
             flush=True,
         )
         if epoch % args.save_every == 0 or epoch == args.epochs:
@@ -310,17 +338,23 @@ def train(args) -> str:
                 optimizer_state=optimizer.state_dict(),
             )
 
+    if best_state is None:
+        raise RuntimeError("CEVC training completed without a valid best checkpoint")
+
+    adapter.load_state_dict(best_state)
     final_path = os.path.join(experiment_dir, f"{args.model_name}.cevc.pth")
-    save_adapter_checkpoint(
-        final_path,
-        adapter=adapter,
-        model_name=args.model_name,
-        base_checkpoint=checkpoint_path,
-        sample_rate=config.data.sample_rate,
-        epoch=args.epochs,
-        feature_stats=manifest.get("stats", {}),
-        optimizer_state=optimizer.state_dict(),
-    )
+    best_path = os.path.join(output_dir, "roughness_adapter_best.pth")
+    checkpoint_kwargs = {
+        "adapter": adapter,
+        "model_name": args.model_name,
+        "base_checkpoint": checkpoint_path,
+        "sample_rate": config.data.sample_rate,
+        "epoch": best.epoch,
+        "feature_stats": manifest.get("stats", {}),
+    }
+    save_adapter_checkpoint(final_path, **checkpoint_kwargs)
+    shutil.copy2(final_path, best_path)
+
     with open(
         os.path.join(output_dir, "training_history.json"), "w", encoding="utf-8"
     ) as destination:
@@ -328,6 +362,9 @@ def train(args) -> str:
             {
                 "base_checkpoint": checkpoint_path,
                 "adapter_path": final_path,
+                "best_checkpoint": best_path,
+                "best_loss": best.value,
+                "best_epoch": best.epoch,
                 "trainable_parameters": adapter.trainable_parameter_count,
                 "history": history,
                 "validation": validation,
@@ -338,6 +375,7 @@ def train(args) -> str:
         )
     return (
         f"CEVC adapter trained successfully: {final_path} | "
+        f"best_loss={best.value:.6f} at epoch {best.epoch} | "
         f"parameters={adapter.trainable_parameter_count:,}"
     )
 
