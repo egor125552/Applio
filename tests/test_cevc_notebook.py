@@ -12,6 +12,11 @@ class CEVCCollabNotebookTests(unittest.TestCase):
     def setUpClass(cls):
         cls.raw = NOTEBOOK.read_text(encoding="utf-8")
         cls.notebook = json.loads(cls.raw)
+        cls.code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in cls.notebook["cells"]
+            if cell["cell_type"] == "code"
+        )
 
     def test_valid_notebook_structure(self):
         self.assertEqual(self.notebook["nbformat"], 4)
@@ -32,12 +37,7 @@ class CEVCCollabNotebookTests(unittest.TestCase):
             compile(source, f"cell_{index}.py", "exec")
 
     def test_notebook_contains_no_embedded_test_cells(self):
-        sources = [
-            "".join(cell.get("source", []))
-            for cell in self.notebook["cells"]
-            if cell["cell_type"] == "code"
-        ]
-        joined = "\n".join(sources).lower()
+        joined = self.code.lower()
         self.assertNotIn("pytest", joined)
         self.assertNotIn("unittest", joined)
         self.assertNotIn("nbconvert", joined)
@@ -50,13 +50,13 @@ class CEVCCollabNotebookTests(unittest.TestCase):
         self.assertIn("followlinks", self.raw)
 
     def test_server_start_is_unbuffered_and_reports_progress(self):
-        self.assertIn('"-u"', self.raw)
-        self.assertIn("PYTHONUNBUFFERED", self.raw)
-        self.assertIn("bufsize=1", self.raw)
-        self.assertIn("flush=True", self.raw)
-        self.assertIn("kernel.proxyPort(6969)", self.raw)
-        self.assertIn("порт 6969", self.raw)
-        self.assertNotIn("startup_timeout = 180", self.raw)
+        self.assertIn('sys.executable, "-u", "app.py"', self.code)
+        self.assertIn("PYTHONUNBUFFERED", self.code)
+        self.assertIn("bufsize=1", self.code)
+        self.assertIn("flush=True", self.code)
+        self.assertIn("kernel.proxyPort(6969)", self.code)
+        self.assertIn("порт 6969", self.code)
+        self.assertNotIn("startup_timeout = 180", self.code)
 
     def test_notebook_is_clean_for_users(self):
         for cell in self.notebook["cells"]:
