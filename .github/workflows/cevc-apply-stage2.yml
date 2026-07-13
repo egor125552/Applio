@@ -25,12 +25,10 @@ jobs:
           base64 -d .cevc-stage2/part00 | gzip -d > /tmp/cevc-stage2.patch
           git apply --check /tmp/cevc-stage2.patch
           git apply /tmp/cevc-stage2.patch
-      - name: Remove temporary delivery files
-        run: |
-          rm -rf .cevc-stage2
-          rm -f .github/workflows/cevc-apply-stage2.yml
-          rm -f .github/workflows/cevc-source-snapshot.yml
-      - name: Commit CEVC stage 2
+          git restore .github/workflows/cevc-registry-tests.yml
+      - name: Remove temporary patch payload
+        run: rm -rf .cevc-stage2
+      - name: Commit CEVC stage 2 code
         env:
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
