@@ -59,11 +59,11 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Reuse the current Train UI model name, epochs, batch size, GPU, sample rate, vocoder, save interval, and checkpointing settings.
 - [x] Add data validation and adapter-only training buttons without a second model selector.
 - [x] Add a clean CEVC Adapter Colab notebook and standalone module/integration/notebook tests.
-- [ ] Pass the expanded CEVC GitHub Actions job.
+- [x] Pass the expanded CEVC GitHub Actions job (`29281872700`).
 - [ ] Run the first real adapter training on the uploaded clean/rough/mixed recordings.
 - [ ] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` A/B controls in inference.
 - [ ] Add audio and metric comparison against the baseline.
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 has a locally tested engineering path for source-label preservation, expressive extraction, frozen-base adapter training, separate checkpoints, and a Train UI that reuses the current experiment settings. The next gate is repository CI, followed by one real Tesla T4 extraction/training run before inference controls and acoustic claims are closed.
+Experiment 1 is closed. Experiment 2 now has a repository-tested engineering path for source-label preservation, expressive extraction, frozen-base adapter training, separate checkpoints, and a Train UI that reuses the current experiment settings. The expanded GitHub Actions suite passes. The next gate is one real Tesla T4 extraction/training run before inference controls and acoustic claims are closed.
