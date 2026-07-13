@@ -5,6 +5,11 @@ import torch
 from rvc.lib.algorithm.commons import rand_slice_segments, slice_segments
 from rvc.lib.algorithm.encoders import PosteriorEncoder, TextEncoder
 from rvc.lib.algorithm.generators.registry import build_generator
+from rvc.lib.algorithm.cevc.roughness_adapter import (
+    DisabledRoughnessAdapter,
+    RoughnessAdapter,
+    RoughnessAdapterConfig,
+)
 from rvc.lib.algorithm.residuals import ResidualCouplingBlock
 
 
@@ -88,6 +93,44 @@ class Synthesizer(torch.nn.Module):
             gin_channels=gin_channels,
         )
         self.emb_g = torch.nn.Embedding(spk_embed_dim, gin_channels)
+        # The disabled adapter has no parameters, so legacy checkpoint keys stay exact.
+        self.cevc_adapter = DisabledRoughnessAdapter()
+        self.cevc_enabled = False
+        self.cevc_inter_channels = inter_channels
+
+    def enable_cevc_adapter(
+        self,
+        feature_dim: int = 5,
+        hidden_channels: int = 64,
+        num_blocks: int = 4,
+        kernel_size: int = 3,
+        dropout: float = 0.0,
+    ) -> RoughnessAdapter:
+        config = RoughnessAdapterConfig(
+            channels=self.cevc_inter_channels,
+            feature_dim=feature_dim,
+            hidden_channels=hidden_channels,
+            num_blocks=num_blocks,
+            kernel_size=kernel_size,
+            dropout=dropout,
+        )
+        self.cevc_adapter = RoughnessAdapter(config)
+        self.cevc_enabled = True
+        return self.cevc_adapter
+
+    def disable_cevc_adapter(self) -> None:
+        self.cevc_adapter = DisabledRoughnessAdapter()
+        self.cevc_enabled = False
+
+    def _apply_cevc_adapter(
+        self,
+        latent: torch.Tensor,
+        expressive_features: Optional[torch.Tensor],
+        roughness: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if not self.cevc_enabled or expressive_features is None or roughness is None:
+            return latent
+        return self.cevc_adapter(latent, expressive_features, roughness)
 
     def _remove_weight_norm_from(self, module):
         for hook in module._forward_pre_hooks.values():
@@ -111,6 +154,8 @@ class Synthesizer(torch.nn.Module):
         y: Optional[torch.Tensor] = None,
         y_lengths: Optional[torch.Tensor] = None,
         ds: Optional[torch.Tensor] = None,
+        expressive_features: Optional[torch.Tensor] = None,
+        roughness: Optional[torch.Tensor] = None,
     ):
         g = self.emb_g(ds).unsqueeze(-1)
         m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
@@ -118,9 +163,12 @@ class Synthesizer(torch.nn.Module):
         if y is not None:
             z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
             z_p = self.flow(z, y_mask, g=g)
+            z_for_decoder = self._apply_cevc_adapter(
+                z, expressive_features, roughness
+            )
             if self.randomized:
                 z_slice, ids_slice = rand_slice_segments(
-                    z, y_lengths, self.segment_size
+                    z_for_decoder, y_lengths, self.segment_size
                 )
                 if self.use_f0:
                     pitchf = slice_segments(pitchf, ids_slice, self.segment_size, 2)
@@ -137,9 +185,9 @@ class Synthesizer(torch.nn.Module):
                 )
 
             if self.use_f0:
-                o = self.dec(z, pitchf, g=g)
+                o = self.dec(z_for_decoder, pitchf, g=g)
             else:
-                o = self.dec(z, g=g)
+                o = self.dec(z_for_decoder, g=g)
             return o, None, x_mask, y_mask, (
                 z,
                 z_p,
@@ -160,6 +208,8 @@ class Synthesizer(torch.nn.Module):
         nsff0: Optional[torch.Tensor] = None,
         sid: torch.Tensor = None,
         rate: Optional[torch.Tensor] = None,
+        expressive_features: Optional[torch.Tensor] = None,
+        roughness: Optional[torch.Tensor] = None,
     ):
         g = self.emb_g(sid).unsqueeze(-1)
         m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
@@ -172,9 +222,10 @@ class Synthesizer(torch.nn.Module):
                 nsff0 = nsff0[:, head:]
 
         z = self.flow(z_p, x_mask, g=g, reverse=True)
+        z_for_decoder = self._apply_cevc_adapter(z, expressive_features, roughness)
         o = (
-            self.dec(z * x_mask, nsff0, g=g)
+            self.dec(z_for_decoder * x_mask, nsff0, g=g)
             if self.use_f0
-            else self.dec(z * x_mask, g=g)
+            else self.dec(z_for_decoder * x_mask, g=g)
         )
         return o, x_mask, (z, z_p, m_p, logs_p)

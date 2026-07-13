@@ -5,6 +5,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
+from distutils.util import strtobool
 
 import numpy as np
 import torch
@@ -18,6 +19,7 @@ import rvc.lib.zluda
 from rvc.configs.config import Config
 from rvc.lib.predictors.f0 import CREPE, FCPE, RMVPE
 from rvc.lib.utils import load_audio_16k, load_embedding
+from rvc.train.extract.expressive import extract_expressive_dataset
 from rvc.train.extract.preparing_files import generate_config, generate_filelist
 
 # Load config
@@ -181,6 +183,7 @@ if __name__ == "__main__":
     embedder_model = sys.argv[6]
     embedder_model_custom = sys.argv[7] if len(sys.argv) > 7 else None
     include_mutes = int(sys.argv[8]) if len(sys.argv) > 8 else 2
+    extract_cevc = bool(strtobool(sys.argv[9])) if len(sys.argv) > 9 else False
 
     wav_path = os.path.join(exp_dir, "sliced_audios_16k")
 
@@ -227,6 +230,22 @@ if __name__ == "__main__":
     devices = ["cpu"] if gpus == "-" else [f"cuda:{idx}" for idx in gpus.split("-")]
 
     run_pitch_extraction(files, devices, f0_method, num_processes)
+
+    if extract_cevc:
+        print("Starting CEVC expressive feature extraction...")
+        cevc_manifest = extract_expressive_dataset(files, exp_dir)
+        data["cevc_expressive_features"] = {
+            "enabled": True,
+            "feature_dim": cevc_manifest["feature_dim"],
+            "feature_names": cevc_manifest["feature_names"],
+            "manifest": "cevc_expressive_manifest.json",
+        }
+        with open(file_path, "w", encoding="utf-8") as destination:
+            json.dump(data, destination, ensure_ascii=False, indent=4)
+        print(
+            "CEVC expressive feature extraction completed for "
+            f"{len(cevc_manifest['files'])} slices."
+        )
 
     run_embedding_extraction(
         files, devices, embedder_model, embedder_model_custom, num_processes

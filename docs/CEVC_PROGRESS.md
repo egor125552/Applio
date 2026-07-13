@@ -46,13 +46,24 @@ This checklist records completed engineering steps separately from the long-form
 
 ## Experiment 2 — Roughness Adapter
 
-- [ ] Freeze the baseline model.
-- [ ] Implement the first small `RoughnessAdapter`.
-- [ ] Keep trainable parameters below 1.5 million.
-- [ ] Add `roughness = 0.0 / 0.5 / 1.0` controls.
-- [ ] Add paired clean/rough voice data preparation.
+- [x] Add a disabled-by-default `RoughnessAdapter` extension point to `Synthesizer`.
+- [x] Preserve the legacy state-dict surface while the adapter is disabled.
+- [x] Make an untrained adapter and `roughness = 0` exact identity paths.
+- [x] Keep the production adapter below 1.5 million trainable parameters.
+- [x] Freeze the baseline model and construct an optimizer from adapter parameters only.
+- [x] Save the adapter as a separate `.cevc.pth` checkpoint tied to the base checkpoint hash.
+- [x] Add scalar and time-varying `roughness` controls to the model API.
+- [x] Extend preprocessing to accept iPhone M4A/AAC inputs and preserve source filenames/labels.
+- [x] Extract energy, spectral tilt, HNR, band aperiodicity, and F0 instability from the existing Extract step.
+- [x] Add automatic clean/rough/mixed filename hints and a per-frame roughness manifest.
+- [x] Reuse the current Train UI model name, epochs, batch size, GPU, sample rate, vocoder, save interval, and checkpointing settings.
+- [x] Add data validation and adapter-only training buttons without a second model selector.
+- [x] Add a clean CEVC Adapter Colab notebook and standalone module/integration/notebook tests.
+- [ ] Pass the expanded CEVC GitHub Actions job.
+- [ ] Run the first real adapter training on the uploaded clean/rough/mixed recordings.
+- [ ] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` A/B controls in inference.
 - [ ] Add audio and metric comparison against the baseline.
 
 ## Current gate
 
-Experiment 1 is closed: constructor compatibility tests, CPU tests, GitHub CI, notebook validation, server startup, model discovery, and real Tesla T4 inference all pass. The next architecture step is Experiment 2: a disabled-by-default Roughness Adapter whose zero setting preserves the baseline path.
+Experiment 1 is closed. Experiment 2 has a locally tested engineering path for source-label preservation, expressive extraction, frozen-base adapter training, separate checkpoints, and a Train UI that reuses the current experiment settings. The next gate is repository CI, followed by one real Tesla T4 extraction/training run before inference controls and acoustic claims are closed.
