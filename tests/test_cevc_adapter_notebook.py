@@ -40,14 +40,14 @@ class CEVCAdapterNotebookTests(unittest.TestCase):
     def test_targets_research_branch_and_foreground_build(self):
         self.assertIn("agent/compact-expressive-vc-architecture", self.raw)
         self.assertIn(
-            'NOTEBOOK_BUILD = "cevc-adapter-v3-foreground-console"',
+            'NOTEBOOK_BUILD = "cevc-adapter-v4-foreground-public-url"',
             self.code,
         )
         self.assertIn("CEVC Roughness Adapter", self.raw)
         self.assertIn("Extract Features", self.raw)
         self.assertIn("Train Roughness Adapter", self.raw)
 
-    def test_server_is_foreground_and_streams_to_colab(self):
+    def test_server_stays_attached_and_streams_to_colab(self):
         launch = next(
             "".join(cell.get("source", []))
             for cell in self.code_cells
@@ -57,14 +57,26 @@ class CEVCAdapterNotebookTests(unittest.TestCase):
         self.assertIn('"--server-name", "0.0.0.0"', launch)
         self.assertIn('"--port", "6969"', launch)
         self.assertIn('"--share"', launch)
-        self.assertIn("subprocess.run(", launch)
+        self.assertIn("subprocess.Popen(", launch)
+        self.assertIn("process.wait()", launch)
+        self.assertIn("while True:", launch)
         self.assertIn('shutil.which("script")', launch)
-        self.assertIn('str(APP_LOG)', launch)
-        self.assertNotIn("subprocess.Popen", launch)
+        self.assertIn('APP_LOG.open("wb"', launch)
         self.assertNotIn("start_new_session", launch)
         self.assertNotIn('"--client"', launch)
         self.assertNotIn('"--listen"', launch)
         self.assertNotIn("Сервер продолжает работать в фоне", launch)
+
+    def test_public_gradio_url_is_detected_and_displayed(self):
+        launch = next(
+            "".join(cell.get("source", []))
+            for cell in self.code_cells
+            if cell.get("metadata", {}).get("id") == "cevc-start-foreground"
+        )
+        self.assertIn("gradio\\.live", launch)
+        self.assertIn("ПУБЛИЧНАЯ ССЫЛКА", launch)
+        self.assertIn("display(HTML", launch)
+        self.assertIn("target=\"_blank\"", launch)
 
     def test_has_separate_log_download_cell(self):
         self.assertIn("cevc-download-logs", self.raw)
