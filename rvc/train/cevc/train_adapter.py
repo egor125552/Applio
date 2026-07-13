@@ -5,15 +5,16 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import shutil
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
 import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[3]
 TRAIN_DIR = ROOT / "rvc" / "train"
@@ -27,7 +28,10 @@ from rvc.lib.algorithm import commons  # noqa: E402
 from rvc.lib.algorithm.cevc.checkpoint import save_adapter_checkpoint  # noqa: E402
 from rvc.lib.algorithm.synthesizers import Synthesizer  # noqa: E402
 from rvc.train.cevc.data import CEVCTextAudioCollate, CEVCTextAudioLoader  # noqa: E402
-from rvc.train.cevc.progress import BestLossTracker  # noqa: E402
+from rvc.train.cevc.progress import (  # noqa: E402
+    BestLossTracker,
+    open_live_console_stream,
+)
 
 
 def _checkpoint_epoch(path: str) -> int:
@@ -224,119 +228,150 @@ def train(args) -> str:
     history = []
     best = BestLossTracker()
     best_state = None
+    total_steps = args.epochs * len(loader)
 
-    for epoch in range(1, args.epochs + 1):
-        running = 0.0
-        batches = 0
-        for batch in loader:
-            batch = [tensor.to(device, non_blocking=True) for tensor in batch]
-            (
-                phone,
-                phone_lengths,
-                pitch,
-                pitchf,
-                spec,
-                spec_lengths,
-                wave,
-                _,
-                speaker_id,
-                expressive,
-                roughness,
-            ) = batch
-
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast(
-                device_type="cuda", dtype=torch.float16, enabled=use_amp
-            ):
-                output = model(
+    with open_live_console_stream() as console, tqdm(
+        total=total_steps,
+        desc="CEVC Roughness Adapter",
+        unit="batch",
+        dynamic_ncols=True,
+        mininterval=0.5,
+        leave=True,
+        file=console,
+    ) as progress:
+        for epoch in range(1, args.epochs + 1):
+            running = 0.0
+            batches = 0
+            for batch in loader:
+                batch = [tensor.to(device, non_blocking=True) for tensor in batch]
+                (
                     phone,
                     phone_lengths,
                     pitch,
                     pitchf,
                     spec,
                     spec_lengths,
+                    wave,
+                    _,
                     speaker_id,
                     expressive,
                     roughness,
-                )
-                generated, ids_slice = output[0], output[1]
-                target = commons.slice_segments(
-                    wave,
-                    ids_slice * config.data.hop_length,
-                    config.train.segment_size,
-                    dim=3,
-                )
-                target_mel = mel_spectrogram_torch(
-                    target.float().squeeze(1),
-                    config.data.filter_length,
-                    config.data.n_mel_channels,
-                    config.data.sample_rate,
-                    config.data.hop_length,
-                    config.data.win_length,
-                    config.data.mel_fmin,
-                    config.data.mel_fmax,
-                )
-                generated_mel = mel_spectrogram_torch(
-                    generated.float().squeeze(1),
-                    config.data.filter_length,
-                    config.data.n_mel_channels,
-                    config.data.sample_rate,
-                    config.data.hop_length,
-                    config.data.win_length,
-                    config.data.mel_fmin,
-                    config.data.mel_fmax,
-                )
-                mel_loss = F.l1_loss(generated_mel, target_mel)
-                waveform_loss = F.l1_loss(generated, target)
-                regularization = sum(
-                    parameter.square().mean() for parameter in adapter.parameters()
-                )
-                loss = mel_loss + 0.1 * waveform_loss + 1e-6 * regularization
+                ) = batch
 
-            if use_amp:
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(adapter.parameters(), 5.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(adapter.parameters(), 5.0)
-                optimizer.step()
-            running += float(loss.detach().cpu())
-            batches += 1
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast(
+                    device_type="cuda", dtype=torch.float16, enabled=use_amp
+                ):
+                    output = model(
+                        phone,
+                        phone_lengths,
+                        pitch,
+                        pitchf,
+                        spec,
+                        spec_lengths,
+                        speaker_id,
+                        expressive,
+                        roughness,
+                    )
+                    generated, ids_slice = output[0], output[1]
+                    target = commons.slice_segments(
+                        wave,
+                        ids_slice * config.data.hop_length,
+                        config.train.segment_size,
+                        dim=3,
+                    )
+                    target_mel = mel_spectrogram_torch(
+                        target.float().squeeze(1),
+                        config.data.filter_length,
+                        config.data.n_mel_channels,
+                        config.data.sample_rate,
+                        config.data.hop_length,
+                        config.data.win_length,
+                        config.data.mel_fmin,
+                        config.data.mel_fmax,
+                    )
+                    generated_mel = mel_spectrogram_torch(
+                        generated.float().squeeze(1),
+                        config.data.filter_length,
+                        config.data.n_mel_channels,
+                        config.data.sample_rate,
+                        config.data.hop_length,
+                        config.data.win_length,
+                        config.data.mel_fmin,
+                        config.data.mel_fmax,
+                    )
+                    mel_loss = F.l1_loss(generated_mel, target_mel)
+                    waveform_loss = F.l1_loss(generated, target)
+                    regularization = sum(
+                        parameter.square().mean() for parameter in adapter.parameters()
+                    )
+                    loss = mel_loss + 0.1 * waveform_loss + 1e-6 * regularization
 
-        average_loss = running / max(batches, 1)
-        is_best = best.update(average_loss, epoch)
-        if is_best:
-            best_state = _snapshot_state_dict(adapter)
+                if use_amp:
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(adapter.parameters(), 5.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(adapter.parameters(), 5.0)
+                    optimizer.step()
 
-        history.append(
-            {
-                "epoch": epoch,
-                "loss": average_loss,
-                "best_loss": best.value,
-                "best_epoch": best.epoch,
-                "is_best": is_best,
-            }
-        )
-        best_marker = " | NEW BEST" if is_best else ""
-        print(
-            f"CEVC epoch {epoch}/{args.epochs} | loss={average_loss:.6f} | "
-            f"best_loss={best.value:.6f} | best_epoch={best.epoch}{best_marker}",
-            flush=True,
-        )
-        if epoch % args.save_every == 0 or epoch == args.epochs:
-            save_adapter_checkpoint(
-                os.path.join(output_dir, f"roughness_adapter_e{epoch}.pth"),
-                adapter=adapter,
-                model_name=args.model_name,
-                base_checkpoint=checkpoint_path,
-                sample_rate=config.data.sample_rate,
-                epoch=epoch,
-                feature_stats=manifest.get("stats", {}),
-                optimizer_state=optimizer.state_dict(),
+                current_loss = float(loss.detach().cpu())
+                if not torch.isfinite(loss.detach()).item():
+                    raise FloatingPointError(
+                        f"CEVC loss became non-finite at epoch {epoch}, "
+                        f"batch {batches + 1}: {current_loss}"
+                    )
+                running += current_loss
+                batches += 1
+                running_average = running / batches
+                visible_best = min(best.value, running_average)
+                progress.set_postfix(
+                    epoch=f"{epoch}/{args.epochs}",
+                    loss=f"{current_loss:.5f}",
+                    avg=f"{running_average:.5f}",
+                    best=f"{visible_best:.5f}",
+                    lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+                    refresh=False,
+                )
+                progress.update(1)
+
+            average_loss = running / max(batches, 1)
+            is_best = best.update(average_loss, epoch)
+            if is_best:
+                best_state = _snapshot_state_dict(adapter)
+
+            history.append(
+                {
+                    "epoch": epoch,
+                    "loss": average_loss,
+                    "best_loss": best.value,
+                    "best_epoch": best.epoch,
+                    "is_best": is_best,
+                }
             )
+            progress.set_postfix(
+                epoch=f"{epoch}/{args.epochs}",
+                loss=f"{average_loss:.5f}",
+                avg=f"{average_loss:.5f}",
+                best=f"{best.value:.5f}@{best.epoch}",
+                status="NEW BEST" if is_best else "training",
+                refresh=True,
+            )
+
+            if epoch % args.save_every == 0 or epoch == args.epochs:
+                save_adapter_checkpoint(
+                    os.path.join(output_dir, f"roughness_adapter_e{epoch}.pth"),
+                    adapter=adapter,
+                    model_name=args.model_name,
+                    base_checkpoint=checkpoint_path,
+                    sample_rate=config.data.sample_rate,
+                    epoch=epoch,
+                    feature_stats=manifest.get("stats", {}),
+                    optimizer_state=optimizer.state_dict(),
+                )
 
     if best_state is None:
         raise RuntimeError("CEVC training completed without a valid best checkpoint")
