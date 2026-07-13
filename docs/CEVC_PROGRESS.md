@@ -54,6 +54,7 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Save the adapter as a separate `.cevc.pth` checkpoint tied to the base checkpoint hash.
 - [x] Add scalar and time-varying `roughness` controls to the model API.
 - [x] Extend preprocessing to accept iPhone M4A/AAC inputs and preserve source filenames/labels.
+- [x] Ignore hidden macOS metadata files and make CEVC data validation require a real `G_*.pth` base checkpoint.
 - [x] Extract energy, spectral tilt, HNR, band aperiodicity, and F0 instability from the existing Extract step.
 - [x] Add automatic clean/rough/mixed filename hints and a per-frame roughness manifest.
 - [x] Reuse the current Train UI model name, epochs, batch size, GPU, sample rate, vocoder, save interval, and checkpointing settings.

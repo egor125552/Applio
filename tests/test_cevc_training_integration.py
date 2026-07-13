@@ -66,6 +66,7 @@ class CEVCTrainingIntegrationTests(unittest.TestCase):
 
     def test_preprocess_accepts_iphone_m4a_and_preserves_source_labels(self):
         self.assertIn('".m4a"', self.preprocess)
+        self.assertIn('f.startswith(".")', self.preprocess)
         self.assertIn("cevc_source_manifest.json", self.preprocess)
         self.assertIn("infer_label_hint(filename)", self.preprocess)
 
@@ -75,6 +76,7 @@ class CEVCTrainingIntegrationTests(unittest.TestCase):
         self.assertIn("optimizer = torch.optim.AdamW(\n        adapter.parameters()", self.trainer)
         self.assertIn(".cevc.pth", self.trainer)
         self.assertIn("--validate-only", self.trainer)
+        self.assertIn('validation["base_checkpoint"]', self.trainer)
 
 
 if __name__ == "__main__":

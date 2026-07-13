@@ -340,6 +340,8 @@ def preprocess_training_set(
         try:
             sid = 0 if root == input_root else int(os.path.basename(root))
             for f in filenames:
+                if f.startswith(".") or f.startswith("._"):
+                    continue
                 if f.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
                     files.append((os.path.join(root, f), idx, sid))
                     idx += 1

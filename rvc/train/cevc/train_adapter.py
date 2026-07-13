@@ -165,10 +165,11 @@ def build_frozen_synthesizer(
 def train(args) -> str:
     experiment_dir = os.path.join(str(ROOT), "logs", args.model_name)
     validation = validate_dataset(experiment_dir)
+    checkpoint_path = find_latest_generator_checkpoint(experiment_dir)
+    validation["base_checkpoint"] = os.path.basename(checkpoint_path)
+    validation["base_checkpoint_epoch"] = _checkpoint_epoch(checkpoint_path)
     if args.validate_only:
         return json.dumps(validation, ensure_ascii=False, indent=2)
-
-    checkpoint_path = find_latest_generator_checkpoint(experiment_dir)
     device = _resolve_device(args.gpu)
     info = _load_model_info(experiment_dir)
     vocoder = args.vocoder or info.get("vocoder", "HiFi-GAN")
