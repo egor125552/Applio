@@ -1,0 +1,26 @@
+name: CEVC current source snapshot
+
+on:
+  push:
+    branches:
+      - agent/compact-expressive-vc-architecture
+    paths:
+      - ".github/workflows/cevc-current-source.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cevc-current-source-${{ github.sha }}
+          retention-days: 1
+          path: |
+            rvc/train/preprocess/preprocess.py
+            rvc/train/cevc/train_adapter.py
+            tests/test_cevc_training_integration.py
+            docs/CEVC_PROGRESS.md
