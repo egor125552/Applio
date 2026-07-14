@@ -10,6 +10,7 @@ on:
       - "core.py"
       - "tabs/train/train.py"
       - "tabs/cevc/**"
+      - "tabs/cevc2b/**"
       - "rvc/infer/cevc.py"
       - "rvc/infer/cevc_ab.py"
       - "rvc/infer/cevc_ab_runtime.py"
@@ -27,6 +28,7 @@ on:
       - "tests/test_expressive_features.py"
       - "tests/test_cevc_training_integration.py"
       - "tests/test_cevc_inference.py"
+      - "tests/test_cevc_experiment2b.py"
       - "assets/Applio_CEVC_Registry.ipynb"
       - "assets/Applio_CEVC_Adapter.ipynb"
       - ".github/workflows/cevc-registry-tests.yml"
@@ -50,7 +52,7 @@ jobs:
       - name: Install minimal test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy
+          python -m pip install numpy soundfile
           python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
       - name: Compile CEVC Python modules
         run: |
@@ -59,6 +61,7 @@ jobs:
             core.py \
             tabs/train/train.py \
             tabs/cevc/cevc.py \
+            tabs/cevc2b/lab.py \
             rvc/infer/cevc.py \
             rvc/infer/cevc_ab.py \
             rvc/infer/cevc_ab_runtime.py \
@@ -68,6 +71,7 @@ jobs:
             rvc/lib/algorithm/cevc/checkpoint.py \
             rvc/lib/algorithm/synthesizers.py \
             rvc/train/cevc/data.py \
+            rvc/train/cevc/experiment2b.py \
             rvc/train/cevc/train_adapter.py \
             rvc/train/extract/expressive.py \
             rvc/train/extract/extract.py \
@@ -78,7 +82,8 @@ jobs:
             tests/test_roughness_adapter.py \
             tests/test_expressive_features.py \
             tests/test_cevc_training_integration.py \
-            tests/test_cevc_inference.py
+            tests/test_cevc_inference.py \
+            tests/test_cevc_experiment2b.py
       - name: Run generator registry tests
         run: python -m unittest tests.test_generator_registry -v
       - name: Run Roughness Adapter tests
@@ -89,6 +94,8 @@ jobs:
         run: python -m unittest tests.test_cevc_training_integration -v
       - name: Run CEVC inference helper tests
         run: python -m unittest tests.test_cevc_inference -v
+      - name: Run CEVC Experiment 2B tests
+        run: python -m unittest tests.test_cevc_experiment2b -v
       - name: Validate Colab notebooks
         run: |
           python -m unittest tests.test_cevc_notebook -v
