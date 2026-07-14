@@ -6,6 +6,9 @@ on:
       - agent/compact-expressive-vc-architecture
     paths:
       - ".github/workflows/publish-prerequisite-mirror.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/publish-prerequisite-mirror.yml"
   workflow_dispatch:
 
 permissions:
@@ -13,6 +16,7 @@ permissions:
 
 jobs:
   publish:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -80,3 +84,50 @@ jobs:
             curl --fail --location --silent --show-error --range 0-0 "$url" >/dev/null
             echo "Reachable: $name"
           done
+
+  verify-public-mirror:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RELEASE_TAG: cevc-prerequisites-v1
+    steps:
+      - name: Wait for and verify every public mirror asset
+        run: |
+          assets=(
+            predictors-rmvpe.pt
+            predictors-fcpe.pt
+            contentvec-pytorch_model.bin
+            contentvec-config.json
+            hifigan-f0D32k.pth
+            hifigan-f0D40k.pth
+            hifigan-f0D48k.pth
+            hifigan-f0G32k.pth
+            hifigan-f0G40k.pth
+            hifigan-f0G48k.pth
+            refinegan-f0D24k.pth
+            refinegan-f0G24k.pth
+            refinegan-f0D32k.pth
+            refinegan-f0G32k.pth
+            SHA256SUMS.txt
+          )
+
+          for attempt in $(seq 1 60); do
+            ready=true
+            for name in "${assets[@]}"; do
+              url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${name}"
+              if ! curl --fail --location --silent --show-error --range 0-0 "$url" >/dev/null 2>&1; then
+                ready=false
+                echo "Mirror not ready yet (${attempt}/60): ${name}"
+                break
+              fi
+            done
+            if [ "$ready" = true ]; then
+              printf '%s\n' "${assets[@]}" | sed 's/^/Reachable: /'
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Public prerequisite mirror did not become ready in time."
+          exit 1
