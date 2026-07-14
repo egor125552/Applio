@@ -58,18 +58,43 @@ jobs:
       - name: Prepare application config
         run: cp -n assets/config_template.json assets/config.json
 
+      - name: Compile the exact browser E2E entrypoints
+        run: |
+          python -m py_compile \
+            tests/cevc_adapter_v2_e2e_fixture.py \
+            tests/cevc_adapter_v2_e2e_app.py \
+            tests/cevc_adapter_v2_e2e_browser.py
+
       - name: Build a mini RVC experiment from public real speech
         shell: bash
         run: |
-          set -o pipefail
-          python -u tests/cevc_adapter_v2_e2e_fixture.py 2>&1 | tee /tmp/cevc_adapter_v2_e2e_fixture.log
+          set -euo pipefail
+          python -u -m tests.cevc_adapter_v2_e2e_fixture 2>&1 | tee /tmp/cevc_adapter_v2_e2e_fixture.log
           test -s logs/cevc_e2e/public_jfk.flac
           test -s logs/cevc_e2e/G_1.pth
           test -s logs/cevc_e2e/cevc2b/critic/roughness_critic_best.pth
+          test -s logs/cevc_e2e/filelist.txt
+          test -s logs/cevc_e2e/config.json
+          python -u - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+          import torch
+
+          root = Path("logs/cevc_e2e")
+          config = json.loads((root / "config.json").read_text())
+          assert config["data"]["filter_length"] // 2 + 1 == 33
+          assert math.prod(config["model"]["upsample_rates"]) == config["data"]["hop_length"]
+          checkpoint = torch.load(root / "G_1.pth", map_location="cpu", weights_only=True)
+          assert checkpoint.get("model"), "Mini RVC checkpoint has no model state"
+          rows = [row for row in (root / "filelist.txt").read_text().splitlines() if row]
+          assert len(rows) == 30, len(rows)
+          print("Mini RVC fixture integrity checks passed.")
+          PY
 
       - name: Start the real CEVC 2B Gradio interface
         run: |
-          python -u tests/cevc_adapter_v2_e2e_app.py > /tmp/cevc_adapter_v2_e2e_server.log 2>&1 &
+          python -u -m tests.cevc_adapter_v2_e2e_app > /tmp/cevc_adapter_v2_e2e_server.log 2>&1 &
           echo $! > /tmp/cevc_adapter_v2_e2e_server.pid
           for attempt in $(seq 1 120); do
             if curl --fail --silent "http://127.0.0.1:${CEVC_E2E_PORT}" >/dev/null; then
@@ -81,8 +106,8 @@ jobs:
           cat /tmp/cevc_adapter_v2_e2e_server.log
           exit 1
 
-      - name: Click Stage 1 and train Adapter v2 through Chromium
-        run: python -u tests/cevc_adapter_v2_e2e_browser.py
+      - name: Click Stage 1, train critic and train Adapter v2 through Chromium
+        run: python -u -m tests.cevc_adapter_v2_e2e_browser
 
       - name: Reject hidden server tracebacks
         if: always()
@@ -101,17 +126,31 @@ jobs:
 
           root = Path("logs/cevc_e2e/cevc2b/adapter_v2")
           report = json.loads((root / "browser_e2e_report.json").read_text())
-          assert report["optimizer_steps_completed"] >= 20, report
-          assert report["completed_epochs"] == 30, report
-          assert report["production_prior_latent_path"] is True, report
+          critic = report["critic"]
+          adapter = report["adapter_v2"]
+          assert critic["optimizer_steps_completed"] >= 20, critic
+          assert adapter["optimizer_steps_completed"] >= 20, adapter
+          assert adapter["epochs"] == 30, adapter
+          assert adapter["production_prior_latent_path"] is True, adapter
+          assert report["total_optimizer_steps_completed"] >= 40, report
           for name in (
               "adapter_v2_summary.json",
               "adapter_v2_history.json",
               "roughness_adapter_v2_best.pth",
               "roughness_adapter_v2_final.pth",
+              "browser_e2e_report.json",
               "browser_final.png",
           ):
               path = root / name
+              assert path.is_file() and path.stat().st_size > 0, path
+          critic_root = Path("logs/cevc_e2e/cevc2b/critic")
+          for name in (
+              "critic_summary.json",
+              "critic_history.json",
+              "roughness_critic_best.pth",
+              "roughness_critic_final.pth",
+          ):
+              path = critic_root / name
               assert path.is_file() and path.stat().st_size > 0, path
           export_path = Path("logs/cevc_e2e/cevc_e2e_v2.cevc.pth")
           assert export_path.is_file() and export_path.stat().st_size > 0
@@ -129,6 +168,8 @@ jobs:
             /tmp/cevc_adapter_v2_e2e_server.log
             logs/cevc_e2e/cevc2b/experiment2b_manifest.json
             logs/cevc_e2e/cevc2b/real_profile/*.json
+            logs/cevc_e2e/cevc2b/critic/*.json
+            logs/cevc_e2e/cevc2b/critic/*.pth
             logs/cevc_e2e/cevc2b/adapter_v2/*.json
             logs/cevc_e2e/cevc2b/adapter_v2/*.png
             logs/cevc_e2e/cevc2b/adapter_v2/*.pth
