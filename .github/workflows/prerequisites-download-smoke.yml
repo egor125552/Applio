@@ -86,6 +86,33 @@ jobs:
           print("CEVC tab module imported successfully.", flush=True)
           PY
 
+      - name: Discover CEVC files through a Drive-style symlink
+        run: |
+          python -u - <<'PY'
+          import tempfile
+          from pathlib import Path
+
+          from tabs.cevc.cevc import LOGS, _adapters, _indexes, _voice_models
+
+          LOGS.mkdir(parents=True, exist_ok=True)
+          with tempfile.TemporaryDirectory() as directory:
+              drive_folder = Path(directory)
+              (drive_folder / "egor_200e_1800s.pth").touch()
+              (drive_folder / "egor.index").touch()
+              (drive_folder / "egor.cevc.pth").touch()
+
+              link = LOGS / "drive_symlink_smoke"
+              link.symlink_to(drive_folder, target_is_directory=True)
+              try:
+                  assert "logs/drive_symlink_smoke/egor_200e_1800s.pth" in _voice_models()
+                  assert "logs/drive_symlink_smoke/egor.index" in _indexes()
+                  assert "logs/drive_symlink_smoke/egor.cevc.pth" in _adapters()
+              finally:
+                  link.unlink()
+
+          print("CEVC discovered model, index and adapter through a symlink.")
+          PY
+
       - name: Build CEVC Gradio tab
         run: |
           python -u - <<'PY'
