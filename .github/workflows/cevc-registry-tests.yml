@@ -6,8 +6,12 @@ on:
       - agent/compact-expressive-vc-architecture
   pull_request:
     paths:
+      - "app.py"
       - "core.py"
       - "tabs/train/train.py"
+      - "tabs/cevc/**"
+      - "rvc/infer/cevc.py"
+      - "rvc/infer/cevc_conditioning.py"
       - "rvc/lib/algorithm/generators/**"
       - "rvc/lib/algorithm/cevc/**"
       - "rvc/lib/algorithm/synthesizers.py"
@@ -20,6 +24,7 @@ on:
       - "tests/test_roughness_adapter.py"
       - "tests/test_expressive_features.py"
       - "tests/test_cevc_training_integration.py"
+      - "tests/test_cevc_inference.py"
       - "assets/Applio_CEVC_Registry.ipynb"
       - "assets/Applio_CEVC_Adapter.ipynb"
       - ".github/workflows/cevc-registry-tests.yml"
@@ -48,8 +53,12 @@ jobs:
       - name: Compile CEVC Python modules
         run: |
           python -m py_compile \
+            app.py \
             core.py \
             tabs/train/train.py \
+            tabs/cevc/cevc.py \
+            rvc/infer/cevc.py \
+            rvc/infer/cevc_conditioning.py \
             rvc/lib/algorithm/generators/registry.py \
             rvc/lib/algorithm/cevc/roughness_adapter.py \
             rvc/lib/algorithm/cevc/checkpoint.py \
@@ -64,7 +73,8 @@ jobs:
             tests/test_cevc_adapter_notebook.py \
             tests/test_roughness_adapter.py \
             tests/test_expressive_features.py \
-            tests/test_cevc_training_integration.py
+            tests/test_cevc_training_integration.py \
+            tests/test_cevc_inference.py
       - name: Run generator registry tests
         run: python -m unittest tests.test_generator_registry -v
       - name: Run Roughness Adapter tests
@@ -73,6 +83,8 @@ jobs:
         run: python -m unittest tests.test_expressive_features -v
       - name: Run CEVC training integration tests
         run: python -m unittest tests.test_cevc_training_integration -v
+      - name: Run CEVC inference helper tests
+        run: python -m unittest tests.test_cevc_inference -v
       - name: Validate Colab notebooks
         run: |
           python -m unittest tests.test_cevc_notebook -v
