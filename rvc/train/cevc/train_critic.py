@@ -1,10 +1,9 @@
-"""Train the Experiment 2B Roughness Critic on real slices and pseudo-pairs."""
+"""Train the Experiment 2B Roughness Critic on real recordings only."""
 
 from __future__ import annotations
 
 import json
 import math
-import os
 import random
 from pathlib import Path
 
@@ -18,10 +17,39 @@ from rvc.lib.algorithm.cevc.roughness_critic import (
     critic_parameter_count,
 )
 
+
 REAL_TARGETS = {"clean": (0.05, 0), "mixed": (0.50, 1), "rough": (0.95, 2)}
+CLASS_NAMES = {0: "clean", 1: "mixed", 2: "rough"}
 
 
-def _read_audio(path: str, sample_count: int, seed: int, random_crop: bool):
+def _augment_audio(audio, sample_rate, seed):
+    """Apply class-independent augmentation to reduce recording/noise shortcuts."""
+
+    rng = np.random.default_rng(int(seed))
+    output = np.asarray(audio, dtype=np.float32).copy()
+    output *= float(10.0 ** (rng.uniform(-4.0, 4.0) / 20.0))
+
+    spectrum = np.fft.rfft(output)
+    frequencies = np.fft.rfftfreq(output.size, 1.0 / sample_rate)
+    tilt_db_per_octave = float(rng.uniform(-2.5, 2.5))
+    octave = np.log2(np.maximum(frequencies, 80.0) / 1000.0)
+    gain_db = np.clip(tilt_db_per_octave * octave, -5.0, 5.0)
+    output = np.fft.irfft(spectrum * np.power(10.0, gain_db / 20.0), n=output.size)
+
+    rms = float(np.sqrt(np.mean(output * output) + 1e-12))
+    snr_db = float(rng.uniform(32.0, 48.0))
+    noise_rms = rms / max(10.0 ** (snr_db / 20.0), 1.0)
+    output += rng.standard_normal(output.size) * noise_rms
+
+    if rng.random() < 0.5:
+        output = -output
+    peak = float(np.max(np.abs(output))) if output.size else 0.0
+    if peak > 0.98:
+        output *= 0.98 / peak
+    return np.nan_to_num(output).astype(np.float32)
+
+
+def _read_audio(path, sample_count, seed, random_crop, augment):
     audio, sample_rate = sf.read(path, dtype="float32", always_2d=False)
     audio = np.asarray(audio, dtype=np.float32)
     if audio.ndim == 2:
@@ -33,62 +61,81 @@ def _read_audio(path: str, sample_count: int, seed: int, random_crop: bool):
             np.linspace(0, 1, audio.size, endpoint=False),
             audio,
         ).astype(np.float32)
+        sample_rate = 16000
     if audio.size < sample_count:
         repeats = int(math.ceil(sample_count / max(audio.size, 1)))
         audio = np.tile(audio, repeats)
     if audio.size > sample_count:
         if random_crop:
-            start = int(np.random.default_rng(seed).integers(0, audio.size - sample_count + 1))
+            start = int(
+                np.random.default_rng(seed).integers(0, audio.size - sample_count + 1)
+            )
         else:
             start = (audio.size - sample_count) // 2
         audio = audio[start : start + sample_count]
-    return torch.from_numpy(audio[:sample_count].copy())
+    audio = audio[:sample_count]
+    if augment:
+        audio = _augment_audio(audio, sample_rate, seed + 700001)
+    return torch.from_numpy(audio.copy())
 
 
 def _load_manifest(experiment_dir):
     experiment = Path(experiment_dir).expanduser().resolve()
     path = experiment / "cevc2b" / "experiment2b_manifest.json"
     if not path.is_file():
-        raise FileNotFoundError("Prepare Experiment 2B pseudo-pairs before training the critic")
-    return experiment, path, json.loads(path.read_text(encoding="utf-8"))
+        raise FileNotFoundError("Prepare CEVC Experiment 2B before training the critic")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("training_policy") != "real_audio_only":
+        raise ValueError("Refusing to train critic from synthetic-audio targets")
+    if manifest.get("synthetic_audio_targets") is not False:
+        raise ValueError("Experiment 2B manifest enables synthetic audio targets")
+    return experiment, path, manifest
 
 
 def _datasets(experiment, manifest):
-    real = {"train": [], "validation": []}
-    for item in manifest["split_records"]:
+    datasets = {
+        "train": {class_id: [] for class_id in CLASS_NAMES},
+        "validation": {class_id: [] for class_id in CLASS_NAMES},
+    }
+    for item in manifest.get("split_records", []):
         label = item.get("label_hint")
-        if label not in REAL_TARGETS:
+        split = item.get("split")
+        if label not in REAL_TARGETS or split not in datasets:
             continue
         target, class_id = REAL_TARGETS[label]
-        real[item["split"]].append(
-            {
-                "path": str(experiment / "sliced_audios_16k" / item["file"]),
-                "target": target,
-                "class_id": class_id,
-            }
+        path = experiment / "sliced_audios_16k" / item["file"]
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing real critic training slice: {path}")
+        datasets[split][class_id].append(
+            {"path": str(path), "target": target, "class_id": class_id}
         )
-    pairs = {"train": [], "validation": []}
-    for pair in manifest["pseudo_pairs"]:
-        pairs[pair["split"]].append(
-            [
-                {
-                    "path": variant["path"],
-                    "target": float(variant["strength"]),
-                }
-                for variant in pair["variants"]
-            ]
-        )
-    if not real["train"] or not real["validation"] or not pairs["train"]:
-        raise ValueError("Experiment 2B manifest does not contain complete train/validation data")
-    return real, pairs
+    for split in datasets:
+        for class_id, entries in datasets[split].items():
+            if not entries:
+                raise ValueError(f"Critic {split} split has no {CLASS_NAMES[class_id]} slices")
+    return datasets
 
 
-def _real_batch(entries, indices, sample_count, seed, device, random_crop):
-    selected = [entries[index % len(entries)] for index in indices]
+def _balanced_batch(class_entries, batch_size, sample_count, seed, device):
+    rng = np.random.default_rng(int(seed))
+    per_class = int(math.ceil(int(batch_size) / len(class_entries)))
+    selected = []
+    for class_id in sorted(class_entries):
+        entries = class_entries[class_id]
+        indices = rng.integers(0, len(entries), size=per_class)
+        selected.extend(entries[int(index)] for index in indices)
+    rng.shuffle(selected)
+    selected = selected[: int(batch_size)]
     waves = torch.stack(
         [
-            _read_audio(item["path"], sample_count, seed + index * 131, random_crop)
-            for index, item in zip(indices, selected)
+            _read_audio(
+                item["path"],
+                sample_count,
+                seed + index * 131,
+                random_crop=True,
+                augment=True,
+            )
+            for index, item in enumerate(selected)
         ]
     ).to(device)
     targets = torch.tensor([item["target"] for item in selected], device=device)
@@ -96,80 +143,74 @@ def _real_batch(entries, indices, sample_count, seed, device, random_crop):
     return waves, targets, classes
 
 
-def _pair_batch(groups, indices, sample_count, seed, device, random_crop):
-    selected = [groups[index % len(groups)] for index in indices]
-    size = len(selected[0])
-    if any(len(group) != size for group in selected):
-        raise ValueError("All pseudo-pairs must contain the same number of strengths")
-    flat = []
-    targets = []
-    for group_index, group in zip(indices, selected):
-        ordered = sorted(group, key=lambda item: item["target"])
-        for variant_index, item in enumerate(ordered):
-            flat.append(
-                _read_audio(
-                    item["path"],
-                    sample_count,
-                    seed + group_index * 137 + variant_index * 17,
-                    random_crop,
-                )
-            )
-            targets.append(item["target"])
-    waves = torch.stack(flat).to(device)
-    target_tensor = torch.tensor(targets, device=device).view(len(selected), size)
-    return waves, target_tensor
+def _ordinal_loss(scores, classes, margin=0.12):
+    means = []
+    for class_id in range(3):
+        mask = classes == class_id
+        if not torch.any(mask):
+            return scores.new_tensor(0.0)
+        means.append(scores[mask].mean())
+    return F.relu(margin - (means[1] - means[0])) + F.relu(
+        margin - (means[2] - means[1])
+    )
 
 
-def _evaluate(model, real_entries, pair_groups, sample_count, batch_size, device, seed):
+def _evaluate(model, class_entries, sample_count, batch_size, device, seed):
     model.eval()
-    real_scores, real_targets, predictions, classes = [], [], [], []
+    all_scores = []
+    all_targets = []
+    all_predictions = []
+    all_classes = []
+    flat = [item for class_id in sorted(class_entries) for item in class_entries[class_id]]
     with torch.no_grad():
-        for start in range(0, len(real_entries), batch_size):
-            indices = list(range(start, min(start + batch_size, len(real_entries))))
-            waves, targets, labels = _real_batch(
-                real_entries, indices, sample_count, seed, device, False
-            )
+        for start in range(0, len(flat), int(batch_size)):
+            selected = flat[start : start + int(batch_size)]
+            waves = torch.stack(
+                [
+                    _read_audio(
+                        item["path"],
+                        sample_count,
+                        seed + start + index,
+                        random_crop=False,
+                        augment=False,
+                    )
+                    for index, item in enumerate(selected)
+                ]
+            ).to(device)
+            targets = torch.tensor([item["target"] for item in selected], device=device)
+            classes = torch.tensor([item["class_id"] for item in selected], device=device)
             output = model(waves)
-            real_scores.append(output["score"].cpu())
-            real_targets.append(targets.cpu())
-            predictions.append(output["class_logits"].argmax(dim=1).cpu())
-            classes.append(labels.cpu())
-        pair_scores, pair_targets = [], []
-        monotonic = []
-        pair_batch_size = max(1, batch_size // 4)
-        for start in range(0, len(pair_groups), pair_batch_size):
-            indices = list(range(start, min(start + pair_batch_size, len(pair_groups))))
-            waves, targets = _pair_batch(
-                pair_groups, indices, sample_count, seed + 10000, device, False
-            )
-            scores = model(waves)["score"].view_as(targets)
-            pair_scores.append(scores.cpu())
-            pair_targets.append(targets.cpu())
-            monotonic.append((scores[:, 1:] > scores[:, :-1]).all(dim=1).float().cpu())
-    real_scores = torch.cat(real_scores)
-    real_targets = torch.cat(real_targets)
-    predictions = torch.cat(predictions)
-    classes = torch.cat(classes)
-    result = {
-        "real_score_mae": float(torch.mean(torch.abs(real_scores - real_targets))),
-        "class_accuracy": float(torch.mean((predictions == classes).float())),
+            all_scores.append(output["score"].cpu())
+            all_targets.append(targets.cpu())
+            all_predictions.append(output["class_logits"].argmax(dim=1).cpu())
+            all_classes.append(classes.cpu())
+
+    scores = torch.cat(all_scores)
+    targets = torch.cat(all_targets)
+    predictions = torch.cat(all_predictions)
+    classes = torch.cat(all_classes)
+    means = {
+        CLASS_NAMES[class_id]: float(scores[classes == class_id].mean())
+        for class_id in range(3)
     }
-    if pair_scores:
-        result["pair_score_mae"] = float(
-            torch.mean(torch.abs(torch.cat(pair_scores) - torch.cat(pair_targets)))
-        )
-        result["pair_monotonic_rate"] = float(torch.mean(torch.cat(monotonic)))
-    else:
-        result["pair_score_mae"] = 1.0
-        result["pair_monotonic_rate"] = 0.0
-    return result
+    margin_clean_mixed = means["mixed"] - means["clean"]
+    margin_mixed_rough = means["rough"] - means["mixed"]
+    ordered = float(margin_clean_mixed > 0.0 and margin_mixed_rough > 0.0)
+    return {
+        "real_score_mae": float(torch.mean(torch.abs(scores - targets))),
+        "class_accuracy": float(torch.mean((predictions == classes).float())),
+        "class_mean_scores": means,
+        "class_ordered": ordered,
+        "clean_to_mixed_margin": margin_clean_mixed,
+        "mixed_to_rough_margin": margin_mixed_rough,
+    }
 
 
 def train_roughness_critic(
     experiment_dir,
     *,
-    epochs=30,
-    batch_size=12,
+    epochs=80,
+    batch_size=32,
     learning_rate=3e-4,
     crop_seconds=2.0,
     hidden_channels=64,
@@ -177,16 +218,19 @@ def train_roughness_critic(
     device=None,
 ):
     experiment, manifest_path, manifest = _load_manifest(experiment_dir)
-    real, pairs = _datasets(experiment, manifest)
+    datasets = _datasets(experiment, manifest)
     device = torch.device(device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
     sample_count = int(round(float(crop_seconds) * 16000))
     model = RoughnessCritic(hidden_channels=int(hidden_channels)).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(learning_rate), weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=float(learning_rate), weight_decay=1e-4
+    )
     output_dir = experiment / "cevc2b" / "critic"
     output_dir.mkdir(parents=True, exist_ok=True)
     best_path = output_dir / "roughness_critic_best.pth"
@@ -194,42 +238,27 @@ def train_roughness_critic(
     history_path = output_dir / "critic_history.json"
     history = []
     best_quality = float("inf")
-    pair_batch_size = max(1, int(batch_size) // 4)
+    train_count = sum(len(items) for items in datasets["train"].values())
+    steps = max(1, math.ceil(train_count / int(batch_size)))
 
     for epoch in range(1, int(epochs) + 1):
         model.train()
-        rng = np.random.default_rng(seed + epoch)
-        real_order = rng.permutation(len(real["train"])).tolist()
-        pair_order = rng.permutation(len(pairs["train"])).tolist()
-        steps = max(
-            math.ceil(len(real_order) / int(batch_size)),
-            math.ceil(len(pair_order) / pair_batch_size),
-        )
         losses = []
         for step in range(steps):
-            real_indices = [
-                real_order[(step * int(batch_size) + offset) % len(real_order)]
-                for offset in range(int(batch_size))
-            ]
-            pair_indices = [
-                pair_order[(step * pair_batch_size + offset) % len(pair_order)]
-                for offset in range(pair_batch_size)
-            ]
-            waves, targets, classes = _real_batch(
-                real["train"], real_indices, sample_count, seed + epoch * 1000, device, True
+            waves, targets, classes = _balanced_batch(
+                datasets["train"],
+                int(batch_size),
+                sample_count,
+                int(seed) + epoch * 10000 + step * 997,
+                device,
             )
-            real_output = model(waves)
-            real_score = F.binary_cross_entropy_with_logits(real_output["score_logit"], targets)
-            class_loss = F.cross_entropy(real_output["class_logits"], classes)
-
-            pair_waves, pair_targets = _pair_batch(
-                pairs["train"], pair_indices, sample_count, seed + epoch * 2000, device, True
+            output = model(waves)
+            score_loss = F.binary_cross_entropy_with_logits(
+                output["score_logit"], targets
             )
-            pair_logits = model(pair_waves)["score_logit"].view_as(pair_targets)
-            pair_scores = torch.sigmoid(pair_logits)
-            pair_score = F.binary_cross_entropy_with_logits(pair_logits, pair_targets)
-            ranking = F.relu(0.08 - (pair_scores[:, 1:] - pair_scores[:, :-1])).mean()
-            loss = real_score + 0.5 * class_loss + pair_score + 0.75 * ranking
+            class_loss = F.cross_entropy(output["class_logits"], classes)
+            ordinal = _ordinal_loss(output["score"], classes)
+            loss = score_loss + 0.6 * class_loss + 0.8 * ordinal
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -238,23 +267,29 @@ def train_roughness_critic(
 
         validation = _evaluate(
             model,
-            real["validation"],
-            pairs["validation"],
+            datasets["validation"],
             sample_count,
             int(batch_size),
             device,
-            seed,
+            int(seed),
         )
+        margin_penalty = max(0.0, 0.10 - validation["clean_to_mixed_margin"])
+        margin_penalty += max(0.0, 0.10 - validation["mixed_to_rough_margin"])
         quality = (
             validation["real_score_mae"]
-            + validation["pair_score_mae"]
-            + 0.5 * (1.0 - validation["pair_monotonic_rate"])
-            + 0.25 * (1.0 - validation["class_accuracy"])
+            + 0.35 * (1.0 - validation["class_accuracy"])
+            + 0.5 * (1.0 - validation["class_ordered"])
+            + margin_penalty
         )
-        record = {"epoch": epoch, "train_loss": float(np.mean(losses)), "quality": quality, **validation}
+        record = {
+            "epoch": epoch,
+            "train_loss": float(np.mean(losses)),
+            "quality": quality,
+            **validation,
+        }
         history.append(record)
         payload = {
-            "format": "cevc-roughness-critic-v1",
+            "format": "cevc-roughness-critic-v2-real-only",
             "epoch": epoch,
             "state_dict": model.state_dict(),
             "model_config": {"hidden_channels": int(hidden_channels)},
@@ -262,17 +297,25 @@ def train_roughness_critic(
             "crop_samples": sample_count,
             "parameters": critic_parameter_count(model),
             "metrics": record,
+            "training_policy": "real_audio_only",
+            "augmentation_policy": "class_independent_gain_eq_noise_polarity",
             "source_manifest": str(manifest_path),
+            "real_roughness_profile": manifest.get("real_roughness_profile", {}).get(
+                "profile_npz"
+            ),
         }
         if quality < best_quality:
             best_quality = quality
             torch.save(payload, best_path)
         torch.save(payload, final_path)
-        history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        history_path.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         print(
-            f"CEVC critic epoch {epoch}/{epochs}: loss={record['train_loss']:.4f}, "
-            f"real_mae={record['real_score_mae']:.4f}, pair_mae={record['pair_score_mae']:.4f}, "
-            f"monotonic={record['pair_monotonic_rate']:.3f}, class_acc={record['class_accuracy']:.3f}"
+            f"CEVC real critic epoch {epoch}/{epochs}: "
+            f"loss={record['train_loss']:.4f}, mae={record['real_score_mae']:.4f}, "
+            f"ordered={record['class_ordered']:.0f}, acc={record['class_accuracy']:.3f}, "
+            f"means={record['class_mean_scores']}"
         )
 
     return {
@@ -283,4 +326,5 @@ def train_roughness_critic(
         "parameters": critic_parameter_count(model),
         "last_metrics": history[-1],
         "device": str(device),
+        "training_policy": "real_audio_only",
     }
