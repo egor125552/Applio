@@ -165,13 +165,13 @@ def _train_critic(
 
 def _check_adapter_v2(experiment_path):
     try:
-        from rvc.train.cevc.train_adapter_v2 import (
+        from rvc.train.cevc.adapter_v2_preflight import (
             validate_adapter_v2_prerequisites,
         )
 
         if not experiment_path:
             raise FileNotFoundError("Select a CEVC experiment folder")
-        result = validate_adapter_v2_prerequisites(_absolute(experiment_path))
+        validate_adapter_v2_prerequisites(_absolute(experiment_path))
         return (
             "Проверка пройдена. Critic принят, базовый checkpoint найден, clean-"
             "срезы для обучения и контроля присутствуют. Adapter v2 можно "
@@ -217,10 +217,10 @@ def _train_adapter_v2(
             status = (
                 "Обучение завершено. Результат: ADAPTER V2 ГОТОВ К A/B. "
                 "Автоматические проверки подтвердили правильное направление "
-                "управления, сохранение громкости и точный нулевой режим. "
-                f"Лучший вариант найден на эпохе {result['best_epoch']}. "
-                "Следующий шаг: открыть CEVC A/B и прослушать 0, 0.5 и 1 из "
-                "одного latent."
+                "управления, сохранение громкости, сохранность спектра, отсутствие "
+                "клиппинга и точный нулевой режим. Лучший вариант найден на эпохе "
+                f"{result['best_epoch']}. Следующий шаг: открыть CEVC A/B и "
+                "прослушать 0, 0.5 и 1 из одного latent."
             )
         else:
             status = (
@@ -355,7 +355,7 @@ def cevc2b_lab_tab():
         "Adapter v2 использует prior latent как на настоящем инференсе. Низкий и "
         "высокий уровни генерируются из одного latent. Базовая RVC-модель и critic "
         "заморожены. Loss не позволяет выиграть простым падением громкости, "
-        "затемнением или большим разрушением спектра."
+        "затемнением, клиппингом или большим разрушением спектра."
     )
     adapter_check_button = gr.Button("Проверить готовность к Adapter v2")
     adapter_check_status = gr.Textbox(label="Готовность к обучению", lines=3)
@@ -381,7 +381,7 @@ def cevc2b_lab_tab():
         )
         gr.Markdown(
             "Для Tesla T4 оставь 30 эпох, батч 4 и скорость 0.0001. Батч 32 здесь "
-            "не подходит: теперь внутри шага работают полная RVC-модель, два "
+            "не подходит: внутри шага работают полная RVC-модель, два "
             "декодирования и critic."
         )
 
