@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +17,7 @@ from rvc.train.cevc.experiment2b import prepare_experiment2b
 from rvc.train.cevc.train_critic import (
     _anchor_ranking_loss,
     _anchor_score_loss,
+    _gate_result,
     train_roughness_critic,
 )
 
@@ -54,7 +57,29 @@ class RoughnessCriticTest(unittest.TestCase):
         self.assertEqual(float(good), 0.0)
         self.assertGreater(float(bad), 0.0)
 
-    def test_one_epoch_real_only_training_writes_checkpoints(self):
+    def test_gate_has_clear_pass_and_fail_results(self):
+        accepted = _gate_result(
+            {
+                "anchor_ordered": 1.0,
+                "clean_to_rough_margin": 0.66,
+                "anchor_score_mae": 0.13,
+                "class_accuracy": 0.76,
+            }
+        )
+        rejected = _gate_result(
+            {
+                "anchor_ordered": 1.0,
+                "clean_to_rough_margin": 0.10,
+                "anchor_score_mae": 0.30,
+                "class_accuracy": 0.40,
+            }
+        )
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["verdict"], "accepted_for_adapter_v2")
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["verdict"], "needs_retraining")
+
+    def test_one_epoch_real_only_training_writes_reports_and_clear_console(self):
         with tempfile.TemporaryDirectory() as directory:
             experiment = Path(directory)
             audio_dir = experiment / "sliced_audios_16k"
@@ -120,16 +145,27 @@ class RoughnessCriticTest(unittest.TestCase):
                 experiment, validation_fraction=0.25, seed=12
             )
             self.assertFalse(prepared["synthetic_audio_targets"])
-            result = train_roughness_critic(
-                experiment,
-                epochs=1,
-                batch_size=6,
-                learning_rate=0.0005,
-                crop_seconds=0.25,
-                hidden_channels=32,
-                seed=12,
-                device="cpu",
-            )
+
+            console = io.StringIO()
+            with redirect_stdout(console):
+                result = train_roughness_critic(
+                    experiment,
+                    epochs=1,
+                    batch_size=6,
+                    learning_rate=0.0005,
+                    crop_seconds=0.25,
+                    hidden_channels=32,
+                    seed=12,
+                    device="cpu",
+                )
+
+            output = console.getvalue()
+            self.assertIn("Шаг 1 из 4", output)
+            self.assertIn("Шаг 4 из 4", output)
+            self.assertIn("Короткий отчёт для передачи", output)
+            self.assertNotIn("means={", output)
+            self.assertNotIn("class_mean_scores", output)
+
             self.assertEqual(
                 result["training_policy"],
                 "real_audio_only_clean_rough_score_anchors",
@@ -137,6 +173,16 @@ class RoughnessCriticTest(unittest.TestCase):
             self.assertTrue(Path(result["best_checkpoint"]).is_file())
             self.assertTrue(Path(result["final_checkpoint"]).is_file())
             self.assertTrue(Path(result["history_path"]).is_file())
+            self.assertTrue(Path(result["summary_path"]).is_file())
+
+            summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(summary["format"], "cevc-critic-human-summary-v1")
+            self.assertIn("accepted_for_adapter_v2", summary)
+            self.assertIn("explanation_ru", summary)
+            self.assertIn("next_step_ru", summary)
+            self.assertIn("best_metrics", summary)
+            self.assertIn("gate", summary)
+
             payload = torch.load(
                 result["best_checkpoint"], map_location="cpu", weights_only=False
             )
