@@ -11,7 +11,6 @@ from pathlib import Path
 import gradio as gr
 
 from assets.i18n.i18n import I18nAuto
-from rvc.infer.cevc import prepare_cevc_converter, seed_cevc_inference
 from rvc.infer.cevc_conditioning import find_cevc_adapter_for_model
 
 
@@ -114,6 +113,11 @@ def _run_ab(
     if not terms_accepted:
         return "You must agree to the Terms of Use to proceed.", None, None, None
     try:
+        # The ordinary Applio interface must start without importing the full
+        # inference stack. Load FAISS, pitch predictors and the RVC pipeline only
+        # after the user explicitly starts an A/B conversion.
+        from rvc.infer.cevc import prepare_cevc_converter, seed_cevc_inference
+
         input_path = _absolute(input_audio)
         model = _absolute(model_path)
         index = _absolute(index_path)
