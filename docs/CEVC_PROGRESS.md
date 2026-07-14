@@ -114,23 +114,32 @@ Dataset decision:
 
 Inference harness:
 
-- [ ] Compute ContentVec, F0, index features and latent once per A/B request.
-- [ ] Decode `0.0`, `0.5` and `1.0` from the same latent.
-- [ ] Require identical output lengths and fail loudly on mismatch.
-- [ ] Add endpoint-discontinuity and duration regression tests.
-- [ ] Save a machine-readable audio comparison report.
+- [x] Compute ContentVec, F0, index features and latent once per A/B request.
+- [x] Decode `0.0`, `0.5` and `1.0` from the same latent.
+- [x] Require identical output lengths and fail loudly on mismatch.
+- [x] Add endpoint-discontinuity and duration regression tests.
+- [x] Save a machine-readable audio comparison report.
 
-Data reuse and supervision:
+Data reuse and supervision implementation:
 
-- [ ] Split train/validation by continuous source-time blocks, not random neighbouring slices.
-- [ ] Generate controlled pseudo-pairs from existing clean slices.
-- [ ] Keep real rough and mixed slices as natural style references.
-- [ ] Train and freeze a small roughness critic on the existing data.
+- [x] Add a separate `CEVC 2B Lab` tab so standard Train and Inference remain uncluttered.
+- [x] Implement train/validation splitting by contiguous source-time tails rather than random neighbouring slices.
+- [x] Implement deterministic clean pseudo-pairs at roughness `0.25`, `0.55` and `0.85` with exact sample-count preservation and approximate RMS preservation.
+- [x] Store the generated dataset and manifest below `logs/<experiment>/cevc2b` so Google Drive retains them.
+- [x] Keep real rough and mixed slices as natural style references rather than synthetic targets.
+- [x] Implement a differentiable waveform Roughness Critic with scalar score and clean/mixed/rough classification heads.
+- [x] Implement critic training with real-label, pseudo-target and monotonic-ranking losses.
+- [x] Save best/final critic checkpoints and machine-readable history.
+- [x] Add deterministic pseudo-pair, contiguous split, critic forward/backward and one-epoch checkpoint tests.
+- [x] Pass CEVC checks run `29333237738` and full Colab dependency/UI smoke run `29333237748`.
+- [ ] Generate the real Experiment 2B pseudo-pairs for `logs/egor` on Colab.
+- [ ] Train and validate the real Roughness Critic on Tesla T4.
+- [ ] Freeze the accepted critic checkpoint for Adapter v2 supervision.
 
 Adapter v2 objective:
 
 - [ ] Add random low/high control pairs from one latent.
-- [ ] Add monotonic roughness-ranking loss.
+- [ ] Add monotonic roughness-ranking loss through the frozen critic.
 - [ ] Add content, F0/voicing and loudness consistency.
 - [ ] Add multi-resolution STFT, HNR and band-aperiodicity losses incrementally.
 - [ ] Prevent simple loudness reduction or spectral darkening from satisfying roughness supervision.
@@ -139,4 +148,4 @@ Adapter v2 objective:
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. No new user recordings are required. The next gate is to repair the single-latent A/B measurement path and train Experiment 2B with explicit roughness-direction, monotonicity, content and loudness constraints using the existing dataset.
+Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. The one-latent measurement path, Experiment 2B dataset builder and Roughness Critic training path are implemented and repository-tested. No new user recordings are required. The next gate is a real Colab run of Stage 1 and Stage 2 in `CEVC 2B Lab`; Adapter v2 training remains intentionally locked until the critic demonstrates useful validation error, monotonic pseudo-pair ordering and clean/mixed/rough separation.
