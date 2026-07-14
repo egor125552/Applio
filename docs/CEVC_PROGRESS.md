@@ -131,29 +131,51 @@ Data reuse and real-only supervision:
 - [x] Provide clean, spectral-only diagnostic, real mixed and real rough preview WAVs.
 - [x] Mark the spectral-only preview explicitly as diagnostic and never a training target.
 - [x] Implement a differentiable waveform Roughness Critic with scalar score and clean/mixed/rough classification heads.
-- [x] Train the critic only from real slices with balanced class batches and ordinal clean < mixed < rough loss.
+- [x] Anchor the scalar axis only with real clean and real rough; keep mixed as a real classification class without a fabricated scalar target.
 - [x] Apply the same random gain, EQ, low-level noise and polarity augmentation across every class to reduce simple recording/noise shortcuts.
-- [x] Save best/final critic checkpoints and machine-readable history.
+- [x] Save best/final critic checkpoints, full history and a short human-readable JSON summary.
+- [x] Replace raw per-epoch console dictionaries with clear staged Colab messages and final verdicts.
 - [x] Copy only UI artifacts to `/tmp`; persistent profile, manifest and checkpoints remain on Google Drive.
 - [x] Add full data checks for every source slice, class coverage, split validity, profile artifacts, preview length and RMS preservation.
 - [x] Add real-profile numerical determinism, critic forward/backward and one-epoch real-only checkpoint tests.
-- [x] Reproduce the Google Drive symlink path and run Stage 1 outputs through Gradio `async_move_files_to_cache`.
-- [x] Pass CEVC checks run `29337035534` and full Colab/Gradio smoke run `29337035565`.
-- [ ] Generate the real profile and split for `logs/egor` on Colab.
-- [ ] Train and validate the real-only Roughness Critic on Tesla T4.
-- [ ] Freeze the accepted critic checkpoint for Adapter v2 supervision.
+- [x] Reproduce the Google Drive symlink path and run Stage 1 and Stage 2 outputs through Gradio `async_move_files_to_cache`.
+- [x] Generate the real profile and split for `logs/egor` on Colab.
+- [x] Train and validate the clean/rough-anchor Roughness Critic on Tesla T4.
+- [x] Accept and freeze the best critic checkpoint from epoch 78 for Adapter v2 supervision.
+- [x] Pass CEVC checks run `29345099758` and full Colab/Gradio smoke run `29345099496`.
 
-Adapter v2 objective:
+### Accepted real critic result
 
-- [ ] Generate random low/high controls from one shared latent.
-- [ ] Add monotonic roughness-ranking loss through the frozen real-only critic.
-- [ ] Match movement toward the saved real roughness spectrum and expressive-feature deltas without treating EQ output as ground truth.
-- [ ] Add content, F0/voicing and loudness consistency.
-- [ ] Add multi-resolution STFT, HNR and band-aperiodicity losses incrementally.
-- [ ] Prevent simple loudness reduction, broadband noise or spectral darkening from satisfying roughness supervision.
-- [ ] Keep the first v2 attempt at 60k parameters; increase to 200–300k only if the direction is correct.
-- [ ] Use the approximately 1.03M-parameter configuration only after the acoustic gate is passed at smaller capacity.
+- Best epoch: 78.
+- Anchor MAE: about `0.1269`.
+- Three-class validation accuracy: about `76.47%`.
+- Clean mean score: about `0.150`.
+- Rough mean score: about `0.814`.
+- Clean-to-rough margin: about `0.664`.
+- Mixed is intentionally diagnostic on the scalar axis because the source contains time-varying transitions.
+
+Adapter v2 objective and interface:
+
+- [x] Generate random low/high controls from one shared prior latent that follows the inference path.
+- [x] Use the accepted frozen critic for directional roughness supervision.
+- [x] Train only from real clean slices; never use spectral-only or noisy synthetic audio as a target.
+- [x] Freeze the base RVC model, decoder and critic; optimize only the 60,160-parameter adapter.
+- [x] Preserve exact identity at `roughness = 0` by architecture and validate it automatically.
+- [x] Add loudness, temporal-envelope, normalized-spectrum, residual-size and clipping safeguards.
+- [x] Require ordered critic scores for baseline, `0.5` and `1.0` during validation.
+- [x] Prefer gate-passing epochs when selecting the best Adapter v2 checkpoint.
+- [x] Preserve the training random stream across deterministic validation passes.
+- [x] Add a lightweight preflight that verifies the accepted critic, full `G_*.pth`, filelist and clean train/validation coverage before loading the heavy trainer.
+- [x] Add Stage 3 controls and human-readable results to `CEVC 2B Lab`.
+- [x] Save a working `.cevc.pth`, full history and a short JSON report for sharing.
+- [x] Add objective gradient, resampling, gate and rejected-critic tests.
+- [ ] Run the real Adapter v2 training on `logs/egor` with Tesla T4.
+- [ ] Pass the automatic Adapter v2 gate on the real validation clean slices.
+- [ ] Run the fixed one-latent acoustic A/B using `Новая запись 278.mp3`.
+- [ ] Accept or reject Adapter v2 by listening and machine-readable diagnostics.
+- [ ] Increase capacity to 200–300k only if the 60k direction is correct but too weak.
+- [ ] Use the approximately 1.03M-parameter configuration only after the smaller model passes the acoustic gate.
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. The one-latent A/B path, Drive-safe Gradio exports, real-only dataset split, real roughness profile and real-only critic training path are repository-tested. No synthetic noisy audio is accepted as a rough voice target, and no new user recordings are required. The next gate is a real Colab run of Stage 1 and Stage 2 in `CEVC 2B Lab`; Adapter v2 remains locked until the critic separates actual clean, mixed and rough validation slices in the correct order.
+Experiment 1 is closed. Experiment 2 v1 failed its acoustic gate. Experiment 2B Stage 1 and Stage 2 have completed real Colab runs, and the epoch-78 clean/rough-anchor critic is accepted. Adapter v2 code, safeguards, UI, console reporting, preflight and repository tests are implemented. The next gate is the first real Adapter v2 training on the user's Tesla T4, followed by the existing one-latent A/B harness. No new recordings are required.
