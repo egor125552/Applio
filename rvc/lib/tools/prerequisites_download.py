@@ -1,14 +1,14 @@
 import os
-import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Set this before importing huggingface_hub. Colab has intermittently received
-# expired/forbidden Xet CDN URLs, while the regular Hub HTTP downloader works.
+# forbidden Xet CDN URLs, while other networks can download the same public files.
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 
+import requests
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
@@ -24,6 +24,10 @@ except Exception:
 HF_REPO_ID = "IAHispano/Applio"
 HF_REVISION = "main"
 HF_RESOURCE_PREFIX = "Resources"
+GITHUB_MIRROR_BASE = (
+    "https://github.com/egor125552/Applio/releases/download/"
+    "cevc-prerequisites-v1"
+)
 
 pretraineds_hifigan_list = [
     (
@@ -61,6 +65,23 @@ folder_mapping_list = {
     "formant/": "rvc/models/formant/",
 }
 
+mirror_asset_mapping = {
+    ("predictors/", "rmvpe.pt"): "predictors-rmvpe.pt",
+    ("predictors/", "fcpe.pt"): "predictors-fcpe.pt",
+    ("embedders/contentvec/", "pytorch_model.bin"): "contentvec-pytorch_model.bin",
+    ("embedders/contentvec/", "config.json"): "contentvec-config.json",
+    ("pretrained_v2/", "f0D32k.pth"): "hifigan-f0D32k.pth",
+    ("pretrained_v2/", "f0D40k.pth"): "hifigan-f0D40k.pth",
+    ("pretrained_v2/", "f0D48k.pth"): "hifigan-f0D48k.pth",
+    ("pretrained_v2/", "f0G32k.pth"): "hifigan-f0G32k.pth",
+    ("pretrained_v2/", "f0G40k.pth"): "hifigan-f0G40k.pth",
+    ("pretrained_v2/", "f0G48k.pth"): "hifigan-f0G48k.pth",
+    ("refinegan/", "f0D24k.pth"): "refinegan-f0D24k.pth",
+    ("refinegan/", "f0G24k.pth"): "refinegan-f0G24k.pth",
+    ("refinegan/", "f0D32k.pth"): "refinegan-f0D32k.pth",
+    ("refinegan/", "f0G32k.pth"): "refinegan-f0G32k.pth",
+}
+
 MIN_MODEL_BYTES = 1024 * 1024
 MAX_DOWNLOAD_ATTEMPTS = 3
 
@@ -78,29 +99,82 @@ def _hub_filename(remote_folder: str, filename: str) -> str:
     return f"{HF_RESOURCE_PREFIX}/{remote_folder}{filename}"
 
 
-def get_file_size_if_missing(file_list):
-    """Return zero for unknown remote sizes without issuing fragile HEAD requests.
+def _mirror_url(remote_folder: str, filename: str) -> str:
+    asset = mirror_asset_mapping.get((remote_folder, filename))
+    if not asset:
+        raise RuntimeError(
+            f"No GitHub mirror asset is configured for {remote_folder}{filename}"
+        )
+    return f"{GITHUB_MIRROR_BASE}/{asset}"
 
-    Hugging Face Xet-backed repositories may redirect HEAD requests to signed CDN
-    URLs that intermittently return HTTP 403 in Colab. The official Hub client
-    performs its own metadata lookup and retry handling during the real download,
-    so a separate size probe is intentionally avoided.
-    """
+
+def get_file_size_if_missing(file_list):
+    """Remote sizes are intentionally unknown; the real download reports bytes."""
     return 0
 
 
+def _copy_cached_file(cached_path: Path, temporary_path: Path, global_bar) -> int:
+    copied_size = 0
+    with cached_path.open("rb") as source, temporary_path.open("wb") as target:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            target.write(chunk)
+            copied_size += len(chunk)
+            global_bar.update(len(chunk))
+    return copied_size
+
+
+def _download_from_github_mirror(
+    remote_folder: str,
+    filename: str,
+    temporary_path: Path,
+    global_bar,
+) -> None:
+    url = _mirror_url(remote_folder, filename)
+    print(f"Falling back to verified GitHub mirror: {url}", flush=True)
+
+    response = requests.get(
+        url,
+        stream=True,
+        allow_redirects=True,
+        timeout=(30, 600),
+        headers={"User-Agent": "Applio-CEVC-Colab/1.0"},
+    )
+    response.raise_for_status()
+    expected_size = int(response.headers.get("content-length", 0))
+    downloaded_size = 0
+
+    with temporary_path.open("wb") as target:
+        for chunk in response.iter_content(1024 * 1024):
+            if not chunk:
+                continue
+            target.write(chunk)
+            downloaded_size += len(chunk)
+            global_bar.update(len(chunk))
+
+    if downloaded_size <= 0:
+        raise RuntimeError(f"GitHub mirror returned an empty file: {url}")
+    if expected_size and downloaded_size != expected_size:
+        raise RuntimeError(
+            f"Incomplete GitHub mirror download for {filename}: "
+            f"expected {expected_size} bytes, got {downloaded_size}"
+        )
+
+
 def download_file(remote_folder, filename, destination_path, global_bar):
-    """Download through huggingface_hub, then atomically install and verify it."""
+    """Download from the Hub, fall back to GitHub, then install atomically."""
     destination = Path(destination_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_name(destination.name + ".part")
     hub_filename = _hub_filename(remote_folder, filename)
 
-    last_error = None
+    hub_error = None
     for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
         try:
             print(
-                f"Downloading prerequisite via Hugging Face Hub "
+                "Downloading prerequisite via Hugging Face Hub "
                 f"({attempt}/{MAX_DOWNLOAD_ATTEMPTS}): {hub_filename}",
                 flush=True,
             )
@@ -118,51 +192,59 @@ def download_file(remote_folder, filename, destination_path, global_bar):
                     f"Hugging Face Hub returned an empty file for {hub_filename}"
                 )
 
-            copied_size = 0
-            with cached_path.open("rb") as source, temporary_path.open("wb") as target:
-                while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    target.write(chunk)
-                    copied_size += len(chunk)
-                    global_bar.update(len(chunk))
-
+            copied_size = _copy_cached_file(cached_path, temporary_path, global_bar)
             expected_size = cached_path.stat().st_size
             if copied_size != expected_size:
                 raise RuntimeError(
                     f"Incomplete local copy for {hub_filename}: "
                     f"expected {expected_size} bytes, got {copied_size}"
                 )
-
-            os.replace(temporary_path, destination)
-            if not _is_valid_existing_file(str(destination)):
-                raise RuntimeError(
-                    f"Downloaded prerequisite is invalid or too small: {destination}"
-                )
-
-            print(
-                f"Verified prerequisite: {destination} "
-                f"({destination.stat().st_size} bytes)",
-                flush=True,
-            )
-            return
+            hub_error = None
+            break
         except Exception as error:
-            last_error = error
+            hub_error = error
             if temporary_path.exists():
                 temporary_path.unlink()
-            if destination.exists() and not _is_valid_existing_file(str(destination)):
-                destination.unlink()
             print(
-                f"Prerequisite attempt {attempt} failed for {hub_filename}: {error}",
+                f"Hugging Face attempt {attempt} failed for {hub_filename}: {error}",
                 flush=True,
             )
+            # A forbidden signed Xet URL generally remains forbidden for this
+            # Colab session. Switch to the independent mirror immediately.
+            if "403" in str(error) or "Forbidden" in str(error):
+                break
             if attempt < MAX_DOWNLOAD_ATTEMPTS:
                 time.sleep(attempt * 2)
 
-    raise RuntimeError(
-        f"Failed to download {hub_filename} after {MAX_DOWNLOAD_ATTEMPTS} attempts"
-    ) from last_error
+    if hub_error is not None:
+        try:
+            _download_from_github_mirror(
+                remote_folder,
+                filename,
+                temporary_path,
+                global_bar,
+            )
+        except Exception as mirror_error:
+            if temporary_path.exists():
+                temporary_path.unlink()
+            raise RuntimeError(
+                f"Both Hugging Face and GitHub mirror failed for {hub_filename}. "
+                f"Hub error: {hub_error}; mirror error: {mirror_error}"
+            ) from mirror_error
+
+    os.replace(temporary_path, destination)
+    if not _is_valid_existing_file(str(destination)):
+        if destination.exists():
+            destination.unlink()
+        raise RuntimeError(
+            f"Downloaded prerequisite is invalid or too small: {destination}"
+        )
+
+    print(
+        f"Verified prerequisite: {destination} "
+        f"({destination.stat().st_size} bytes)",
+        flush=True,
+    )
 
 
 def download_mapping_files(file_mapping_list, global_bar):
@@ -212,8 +294,6 @@ pretraineds_hifigan_list, _ = split_pretraineds(pretraineds_hifigan_list)
 
 
 def calculate_total_size(pretraineds_hifigan, models, exe):
-    # Remote sizes are deliberately left unknown; tqdm still reports downloaded
-    # byte counts without relying on a separate CDN HEAD request.
     return 0
 
 
@@ -243,7 +323,7 @@ def _verify_selected_files(pretraineds_hifigan, models, exe):
 
 
 def prequisites_download_pipeline(pretraineds_hifigan, models, exe):
-    """Download and verify selected prerequisites with a Colab-safe Hub client."""
+    """Download and verify prerequisites with a Colab-safe fallback mirror."""
     try:
         with tqdm(
             total=None,
@@ -267,7 +347,6 @@ def prequisites_download_pipeline(pretraineds_hifigan, models, exe):
         print("All selected prerequisites were downloaded and verified.", flush=True)
     except Exception as error:
         print(f"Prerequisite installation failed: {error}", flush=True)
-        # core.py currently catches ordinary Exception and otherwise exits zero.
-        # SystemExit deliberately bypasses that handler so Colab cannot print
-        # "Готово" after a failed prerequisite installation.
+        # SystemExit bypasses core.py's ordinary Exception handler, so Colab
+        # cannot print "Готово" after a failed prerequisite installation.
         raise SystemExit(1) from error
