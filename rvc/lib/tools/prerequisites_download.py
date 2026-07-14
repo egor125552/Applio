@@ -3,27 +3,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-# Set this before importing huggingface_hub. Colab has intermittently received
-# forbidden Xet CDN URLs, while other networks can download the same public files.
-os.environ["HF_HUB_DISABLE_XET"] = "1"
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
-
 import requests
-from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
-try:
-    # huggingface_hub may already have been imported by another dependency.
-    # Keep its cached constant consistent with the environment in that case.
-    from huggingface_hub import constants as hf_constants
-
-    hf_constants.HF_HUB_DISABLE_XET = True
-except Exception:
-    pass
-
-HF_REPO_ID = "IAHispano/Applio"
-HF_REVISION = "main"
-HF_RESOURCE_PREFIX = "Resources"
+OFFICIAL_BASE = "https://huggingface.co/IAHispano/Applio/resolve/main/Resources"
 GITHUB_MIRROR_BASE = (
     "https://github.com/egor125552/Applio/releases/download/"
     "cevc-prerequisites-v1"
@@ -83,7 +66,7 @@ mirror_asset_mapping = {
 }
 
 MIN_MODEL_BYTES = 1024 * 1024
-MAX_DOWNLOAD_ATTEMPTS = 3
+MAX_OFFICIAL_ATTEMPTS = 2
 
 
 def _is_valid_existing_file(path: str) -> bool:
@@ -95,8 +78,8 @@ def _is_valid_existing_file(path: str) -> bool:
     return candidate.stat().st_size > 0
 
 
-def _hub_filename(remote_folder: str, filename: str) -> str:
-    return f"{HF_RESOURCE_PREFIX}/{remote_folder}{filename}"
+def _official_url(remote_folder: str, filename: str) -> str:
+    return f"{OFFICIAL_BASE}/{remote_folder}{filename}"
 
 
 def _mirror_url(remote_folder: str, filename: str) -> str:
@@ -109,43 +92,23 @@ def _mirror_url(remote_folder: str, filename: str) -> str:
 
 
 def get_file_size_if_missing(file_list):
-    """Remote sizes are intentionally unknown; the real download reports bytes."""
+    # A separate HEAD request is intentionally avoided. Hugging Face can route
+    # HEAD and GET differently, so the real streaming GET is the source of truth.
     return 0
 
 
-def _copy_cached_file(cached_path: Path, temporary_path: Path, global_bar) -> int:
-    copied_size = 0
-    with cached_path.open("rb") as source, temporary_path.open("wb") as target:
-        while True:
-            chunk = source.read(1024 * 1024)
-            if not chunk:
-                break
-            target.write(chunk)
-            copied_size += len(chunk)
-            global_bar.update(len(chunk))
-    return copied_size
-
-
-def _download_from_github_mirror(
-    remote_folder: str,
-    filename: str,
-    temporary_path: Path,
-    global_bar,
-) -> None:
-    url = _mirror_url(remote_folder, filename)
-    print(f"Falling back to verified GitHub mirror: {url}", flush=True)
-
+def _stream_download(url: str, temporary_path: Path, global_bar, source_name: str):
     response = requests.get(
         url,
         stream=True,
         allow_redirects=True,
         timeout=(30, 600),
-        headers={"User-Agent": "Applio-CEVC-Colab/1.0"},
+        headers={"User-Agent": "Applio-Colab/3.6.3-compatible"},
     )
     response.raise_for_status()
+
     expected_size = int(response.headers.get("content-length", 0))
     downloaded_size = 0
-
     with temporary_path.open("wb") as target:
         for chunk in response.iter_content(1024 * 1024):
             if not chunk:
@@ -155,89 +118,79 @@ def _download_from_github_mirror(
             global_bar.update(len(chunk))
 
     if downloaded_size <= 0:
-        raise RuntimeError(f"GitHub mirror returned an empty file: {url}")
+        raise RuntimeError(f"{source_name} returned an empty file: {url}")
     if expected_size and downloaded_size != expected_size:
         raise RuntimeError(
-            f"Incomplete GitHub mirror download for {filename}: "
-            f"expected {expected_size} bytes, got {downloaded_size}"
+            f"Incomplete {source_name} download: expected {expected_size} bytes, "
+            f"got {downloaded_size}: {url}"
         )
 
 
 def download_file(remote_folder, filename, destination_path, global_bar):
-    """Download from the Hub, fall back to GitHub, then install atomically."""
+    """Use the exact official HTTP route first, then the verified GitHub mirror."""
     destination = Path(destination_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_name(destination.name + ".part")
-    hub_filename = _hub_filename(remote_folder, filename)
+    official_url = _official_url(remote_folder, filename)
 
-    hub_error = None
-    for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+    official_error = None
+    for attempt in range(1, MAX_OFFICIAL_ATTEMPTS + 1):
         try:
             print(
-                "Downloading prerequisite via Hugging Face Hub "
-                f"({attempt}/{MAX_DOWNLOAD_ATTEMPTS}): {hub_filename}",
+                "Downloading prerequisite using official Applio HTTP route "
+                f"({attempt}/{MAX_OFFICIAL_ATTEMPTS}): {remote_folder}{filename}",
                 flush=True,
             )
-            cached_path = Path(
-                hf_hub_download(
-                    repo_id=HF_REPO_ID,
-                    filename=hub_filename,
-                    revision=HF_REVISION,
-                    force_download=True,
-                    local_files_only=False,
-                )
+            _stream_download(
+                official_url,
+                temporary_path,
+                global_bar,
+                "Hugging Face",
             )
-            if not cached_path.is_file() or cached_path.stat().st_size <= 0:
-                raise RuntimeError(
-                    f"Hugging Face Hub returned an empty file for {hub_filename}"
-                )
-
-            copied_size = _copy_cached_file(cached_path, temporary_path, global_bar)
-            expected_size = cached_path.stat().st_size
-            if copied_size != expected_size:
-                raise RuntimeError(
-                    f"Incomplete local copy for {hub_filename}: "
-                    f"expected {expected_size} bytes, got {copied_size}"
-                )
-            hub_error = None
+            official_error = None
             break
         except Exception as error:
-            hub_error = error
+            official_error = error
             if temporary_path.exists():
                 temporary_path.unlink()
             print(
-                f"Hugging Face attempt {attempt} failed for {hub_filename}: {error}",
+                f"Official download attempt {attempt} failed for "
+                f"{remote_folder}{filename}: {error}",
                 flush=True,
             )
-            # A forbidden signed Xet URL generally remains forbidden for this
-            # Colab session. Switch to the independent mirror immediately.
-            if "403" in str(error) or "Forbidden" in str(error):
-                break
-            if attempt < MAX_DOWNLOAD_ATTEMPTS:
+            if attempt < MAX_OFFICIAL_ATTEMPTS:
                 time.sleep(attempt * 2)
 
-    if hub_error is not None:
+    if official_error is not None:
+        mirror_url = _mirror_url(remote_folder, filename)
+        print(
+            f"Falling back to verified GitHub mirror: {mirror_url}",
+            flush=True,
+        )
         try:
-            _download_from_github_mirror(
-                remote_folder,
-                filename,
+            _stream_download(
+                mirror_url,
                 temporary_path,
                 global_bar,
+                "GitHub mirror",
             )
         except Exception as mirror_error:
             if temporary_path.exists():
                 temporary_path.unlink()
             raise RuntimeError(
-                f"Both Hugging Face and GitHub mirror failed for {hub_filename}. "
-                f"Hub error: {hub_error}; mirror error: {mirror_error}"
+                f"Both official download and GitHub mirror failed for "
+                f"{remote_folder}{filename}. Official error: {official_error}; "
+                f"mirror error: {mirror_error}"
             ) from mirror_error
 
     os.replace(temporary_path, destination)
     if not _is_valid_existing_file(str(destination)):
+        size = destination.stat().st_size if destination.exists() else 0
         if destination.exists():
             destination.unlink()
         raise RuntimeError(
-            f"Downloaded prerequisite is invalid or too small: {destination}"
+            f"Downloaded prerequisite is invalid or too small: {destination} "
+            f"({size} bytes)"
         )
 
     print(
@@ -248,7 +201,7 @@ def download_file(remote_folder, filename, destination_path, global_bar):
 
 
 def download_mapping_files(file_mapping_list, global_bar):
-    """Download every missing/invalid file and propagate all failures."""
+    """Download every missing or invalid file and propagate all failures."""
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
         for remote_folder, file_list in file_mapping_list:
@@ -323,7 +276,7 @@ def _verify_selected_files(pretraineds_hifigan, models, exe):
 
 
 def prequisites_download_pipeline(pretraineds_hifigan, models, exe):
-    """Download and verify prerequisites with a Colab-safe fallback mirror."""
+    """Download and verify prerequisites with an independent fallback mirror."""
     try:
         with tqdm(
             total=None,
