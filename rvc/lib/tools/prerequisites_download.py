@@ -1,7 +1,9 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
+from pathlib import Path
+
 import requests
+from tqdm import tqdm
 
 url_base = "https://huggingface.co/IAHispano/Applio/resolve/main/Resources"
 
@@ -43,52 +45,92 @@ folder_mapping_list = {
     "formant/": "rvc/models/formant/",
 }
 
+MIN_MODEL_BYTES = 1024 * 1024
+
+
+def _is_valid_existing_file(path: str) -> bool:
+    candidate = Path(path)
+    if not candidate.is_file():
+        return False
+    if candidate.suffix in {".pt", ".pth", ".bin"}:
+        return candidate.stat().st_size >= MIN_MODEL_BYTES
+    return candidate.stat().st_size > 0
+
 
 def get_file_size_if_missing(file_list):
-    """
-    Calculate the total size of files to be downloaded only if they do not exist locally.
-    """
+    """Calculate the total download size for missing or obviously invalid files."""
     total_size = 0
     for remote_folder, files in file_list:
         local_folder = folder_mapping_list.get(remote_folder, "")
         for file in files:
             destination_path = os.path.join(local_folder, file)
-            if not os.path.exists(destination_path):
+            if not _is_valid_existing_file(destination_path):
                 url = f"{url_base}/{remote_folder}{file}"
-                response = requests.head(url)
+                response = requests.head(url, allow_redirects=True, timeout=30)
+                response.raise_for_status()
                 total_size += int(response.headers.get("content-length", 0))
     return total_size
 
 
 def download_file(url, destination_path, global_bar):
-    """
-    Download a file from the given URL to the specified destination path,
-    updating the global progress bar as data is downloaded.
-    """
-
+    """Download atomically and reject HTTP errors, empty files and truncation."""
     dir_name = os.path.dirname(destination_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    response = requests.get(url, stream=True)
-    block_size = 1024
-    with open(destination_path, "wb") as file:
-        for data in response.iter_content(block_size):
-            file.write(data)
-            global_bar.update(len(data))
+
+    temporary_path = destination_path + ".part"
+    try:
+        response = requests.get(url, stream=True, timeout=(30, 300))
+        response.raise_for_status()
+        expected_size = int(response.headers.get("content-length", 0))
+        downloaded_size = 0
+
+        with open(temporary_path, "wb") as file:
+            for data in response.iter_content(1024 * 1024):
+                if not data:
+                    continue
+                file.write(data)
+                downloaded_size += len(data)
+                global_bar.update(len(data))
+
+        if downloaded_size <= 0:
+            raise RuntimeError(f"Downloaded an empty prerequisite from {url}")
+        if expected_size and downloaded_size != expected_size:
+            raise RuntimeError(
+                f"Incomplete prerequisite download for {url}: "
+                f"expected {expected_size} bytes, got {downloaded_size}"
+            )
+
+        os.replace(temporary_path, destination_path)
+        if not _is_valid_existing_file(destination_path):
+            raise RuntimeError(
+                f"Downloaded prerequisite is invalid or too small: {destination_path}"
+            )
+        print(
+            f"Verified prerequisite: {destination_path} "
+            f"({os.path.getsize(destination_path)} bytes)"
+        )
+    except Exception:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        if os.path.exists(destination_path) and not _is_valid_existing_file(
+            destination_path
+        ):
+            os.remove(destination_path)
+        raise
 
 
 def download_mapping_files(file_mapping_list, global_bar):
-    """
-    Download all files in the provided file mapping list using a thread pool executor,
-    and update the global progress bar as downloads progress.
-    """
+    """Download all missing or invalid files and propagate every failure."""
     with ThreadPoolExecutor() as executor:
         futures = []
         for remote_folder, file_list in file_mapping_list:
             local_folder = folder_mapping_list.get(remote_folder, "")
             for file in file_list:
                 destination_path = os.path.join(local_folder, file)
-                if not os.path.exists(destination_path):
+                if not _is_valid_existing_file(destination_path):
+                    if os.path.exists(destination_path):
+                        os.remove(destination_path)
                     url = f"{url_base}/{remote_folder}{file}"
                     futures.append(
                         executor.submit(
@@ -120,9 +162,7 @@ def calculate_total_size(
     models,
     exe,
 ):
-    """
-    Calculate the total size of all files to be downloaded based on selected categories.
-    """
+    """Calculate the total size of all selected prerequisite downloads."""
     total_size = 0
     if models:
         total_size += get_file_size_if_missing(models_list)
@@ -139,29 +179,27 @@ def prequisites_download_pipeline(
     models,
     exe,
 ):
-    """
-    Manage the download pipeline for different categories of files.
-    """
+    """Download and verify all selected prerequisites."""
     total_size = calculate_total_size(
         pretraineds_hifigan_list if pretraineds_hifigan else [],
         models,
         exe,
     )
 
-    if total_size > 0:
-        with tqdm(
-            total=total_size, unit="iB", unit_scale=True, desc="Downloading all files"
-        ) as global_bar:
-            if models:
-                download_mapping_files(models_list, global_bar)
-                download_mapping_files(embedders_list, global_bar)
-            if exe:
-                if os.name == "nt":
-                    download_mapping_files(executables_list, global_bar)
-                else:
-                    print("No executables needed")
-            if pretraineds_hifigan:
-                download_mapping_files(pretraineds_hifigan_list, global_bar)
-                download_mapping_files(pretraineds_refinegan_list, global_bar)
-    else:
-        pass
+    with tqdm(
+        total=total_size,
+        unit="iB",
+        unit_scale=True,
+        desc="Downloading and verifying prerequisites",
+    ) as global_bar:
+        if models:
+            download_mapping_files(models_list, global_bar)
+            download_mapping_files(embedders_list, global_bar)
+        if exe:
+            if os.name == "nt":
+                download_mapping_files(executables_list, global_bar)
+            else:
+                print("No executables needed")
+        if pretraineds_hifigan:
+            download_mapping_files(pretraineds_hifigan_list, global_bar)
+            download_mapping_files(pretraineds_refinegan_list, global_bar)
