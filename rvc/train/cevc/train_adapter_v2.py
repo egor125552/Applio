@@ -7,6 +7,7 @@ import math
 import os
 import random
 import shutil
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,23 @@ def _console(message: str) -> None:
     print(f"[CEVC Adapter v2] {message}", flush=True)
 
 
+@contextmanager
+def _temporary_torch_seed(seed: int):
+    """Use a deterministic validation seed without changing later training RNG."""
+
+    cpu_state = torch.random.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
 def _load_experiment2b_manifest(experiment: Path) -> tuple[Path, dict]:
     path = experiment / "cevc2b" / "experiment2b_manifest.json"
     if not path.is_file():
@@ -48,6 +66,8 @@ def _load_experiment2b_manifest(experiment: Path) -> tuple[Path, dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("training_policy") != "real_audio_only":
         raise ValueError("Adapter v2 refuses a manifest with synthetic audio targets")
+    if payload.get("synthetic_audio_targets") is not False:
+        raise ValueError("Adapter v2 refuses synthetic audio targets")
     return path, payload
 
 
@@ -69,6 +89,8 @@ def _load_accepted_critic(
         raise ValueError(
             "The saved critic did not pass the acceptance gate; Adapter v2 is locked"
         )
+    if "state_dict" not in payload:
+        raise ValueError("Accepted critic checkpoint has no model state")
     model = RoughnessCritic(**payload.get("model_config", {}))
     model.load_state_dict(payload["state_dict"])
     model.to(device).eval()
@@ -122,6 +144,8 @@ def validate_adapter_v2_prerequisites(experiment_dir) -> dict:
     if not critic_path.is_file():
         raise FileNotFoundError("Accepted critic checkpoint is missing")
     critic_payload = torch.load(critic_path, map_location="cpu", weights_only=False)
+    if critic_payload.get("format") != "cevc-roughness-critic-v3-clean-rough-anchors":
+        raise ValueError("Saved critic is not the required clean/rough-anchor v3")
     gate = _gate_result(critic_payload.get("metrics", {}))
     if not gate["accepted"]:
         raise ValueError("Saved critic has not passed the Adapter v2 gate")
@@ -208,14 +232,16 @@ def _shared_prior_segment(model, batch, config, *, seed=None):
         expressive,
         _roughness,
     ) = batch
-    if seed is not None:
-        torch.manual_seed(int(seed))
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(int(seed))
-
-    with torch.no_grad():
+    deterministic = _temporary_torch_seed(seed) if seed is not None else nullcontext()
+    with deterministic, torch.no_grad():
         g = model.emb_g(speaker_id).unsqueeze(-1)
         m_p, logs_p, x_mask = model.enc_p(phone, pitch, phone_lengths)
+        if torch.any(phone_lengths < model.segment_size):
+            shortest = int(phone_lengths.min().item())
+            raise ValueError(
+                f"A clean slice is too short for Adapter v2: {shortest} frames; "
+                f"need at least {model.segment_size}"
+            )
         noise = torch.randn_like(m_p)
         z_p = (m_p + torch.exp(logs_p) * noise * 0.66666) * x_mask
         z = model.flow(z_p, x_mask, g=g, reverse=True)
@@ -268,18 +294,18 @@ def _validation_metrics(model, critic, loader, config, device, seed):
         "zero_identity_max_abs": [],
         "clipping_fraction": [],
     }
-    for index, raw_batch in enumerate(loader):
-        batch = _to_device(raw_batch, device)
-        z, pitchf, expressive, g, baseline = _shared_prior_segment(
-            model, batch, config, seed=int(seed) + index
-        )
-        batch_size = z.shape[0]
-        zero_control = torch.zeros(batch_size, device=device)
-        mid_control = torch.full((batch_size,), 0.5, device=device)
-        high_control = torch.ones(batch_size, device=device)
-        zero_latent = model.cevc_adapter(z, expressive, zero_control)
-        zero_identity = (zero_latent - z).abs().max()
-        with torch.no_grad():
+    with torch.no_grad():
+        for index, raw_batch in enumerate(loader):
+            batch = _to_device(raw_batch, device)
+            z, pitchf, expressive, g, baseline = _shared_prior_segment(
+                model, batch, config, seed=int(seed) + index
+            )
+            batch_size = z.shape[0]
+            zero_control = torch.zeros(batch_size, device=device)
+            mid_control = torch.full((batch_size,), 0.5, device=device)
+            high_control = torch.ones(batch_size, device=device)
+            zero_latent = model.cevc_adapter(z, expressive, zero_control)
+            zero_identity = (zero_latent - z).abs().max()
             mid, _ = _decode_with_control(
                 model, z, pitchf, expressive, g, mid_control
             )
@@ -367,12 +393,16 @@ def _save_v2_checkpoint(
 def _human_progress(metrics: dict) -> str:
     margin = float(metrics.get("critic_margin", 0.0))
     loudness = float(metrics.get("loudness_drift_db", float("inf")))
+    spectrum = float(metrics.get("spectral_distance", float("inf")))
+    clipping = float(metrics.get("clipping_fraction", float("inf")))
     direction = "правильное" if metrics.get("control_ordered") else "ещё нестабильное"
     separation = "заметное" if margin >= 0.10 else "пока слабое"
     volume = "сохранена" if loudness <= 1.0 else "заметно меняется"
+    timbre = "не разрушен" if spectrum <= 0.35 else "слишком сильно изменён"
+    peaks = "клиппинга нет" if clipping <= 0.001 else "появился клиппинг"
     return (
         f"направление управления — {direction}; эффект — {separation}; "
-        f"громкость — {volume}"
+        f"громкость — {volume}; тембр — {timbre}; {peaks}"
     )
 
 
@@ -444,6 +474,7 @@ def train_adapter_v2(
     best_metrics = None
     best_epoch = 0
     report_interval = max(1, int(epochs) // 6)
+    first_passed_epoch = None
 
     _console(
         "Проверка пройдена. Critic принят; Adapter v2 будет обучаться только на "
@@ -530,28 +561,33 @@ def train_adapter_v2(
             device,
             int(seed) + 900000,
         )
+        gate_passed = bool(metrics["gate"]["passed"])
+        selection_quality = float(metrics["quality"]) + (0.0 if gate_passed else 1.0)
         record = {
             "epoch": epoch,
             "train_loss": float(np.mean(epoch_losses)),
+            "selection_quality": selection_quality,
             **metrics,
         }
         history.append(record)
-        quality = float(metrics["quality"])
-        if quality < best_quality:
-            best_quality = quality
+        if selection_quality < best_quality:
+            best_quality = selection_quality
             best_state = _snapshot_state_dict(adapter)
             best_metrics = json.loads(json.dumps(metrics))
             best_epoch = epoch
         history_path.write_text(
             json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        newly_passed = gate_passed and first_passed_epoch is None
+        if newly_passed:
+            first_passed_epoch = epoch
         if (
             epoch == 1
             or epoch == int(epochs)
             or epoch % report_interval == 0
-            or metrics["gate"]["passed"]
+            or newly_passed
         ):
-            accepted_note = " Критерии уже выполнены." if metrics["gate"]["passed"] else ""
+            accepted_note = " Критерии впервые выполнены." if newly_passed else ""
             _console(
                 f"Эпоха {epoch} из {int(epochs)}: {_human_progress(metrics)}."
                 f"{accepted_note}"
@@ -559,6 +595,8 @@ def train_adapter_v2(
 
     if best_state is None or best_metrics is None:
         raise RuntimeError("Adapter v2 training completed without a best state")
+    last_state = _snapshot_state_dict(adapter)
+    last_metrics = json.loads(json.dumps(history[-1]))
     adapter.load_state_dict(best_state)
     _console("Шаг 4 из 5. Сохраняю лучший Adapter v2 и проверяю итоговый gate.")
     feature_manifest = load_manifest(str(experiment))
@@ -575,19 +613,21 @@ def train_adapter_v2(
         metrics=best_metrics,
     )
     shutil.copy2(best_path, export_path)
+    adapter.load_state_dict(last_state)
     _save_v2_checkpoint(
         final_path,
         adapter=adapter,
         experiment=experiment,
         base_checkpoint=base_checkpoint,
         sample_rate=config.data.sample_rate,
-        epoch=best_epoch,
+        epoch=int(epochs),
         feature_stats=feature_manifest.get("stats", {}),
         critic_path=critic_path,
         critic_payload=critic_payload,
-        metrics=best_metrics,
+        metrics=last_metrics,
         optimizer_state=optimizer.state_dict(),
     )
+    adapter.load_state_dict(best_state)
 
     gate = adapter_v2_gate(best_metrics)
     passed = bool(gate["passed"])
@@ -609,6 +649,7 @@ def train_adapter_v2(
             else "Проверить историю и скорректировать objective или обучение."
         ),
         "best_epoch": int(best_epoch),
+        "first_passed_epoch": first_passed_epoch,
         "best_metrics": best_metrics,
         "gate": gate,
         "settings": {
@@ -640,6 +681,8 @@ def train_adapter_v2(
             "critic_is_frozen": True,
             "base_model_is_frozen": True,
             "zero_control_is_exact_identity_by_architecture": True,
+            "validation_rng_does_not_reset_training_rng": True,
+            "best_checkpoint_prefers_gate_passing_epochs": True,
         },
     }
     summary_path.write_text(
