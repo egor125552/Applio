@@ -11,6 +11,8 @@ import torch.nn.functional as F
 ADAPTER_V2_GATE_THRESHOLDS = {
     "critic_margin_min": 0.10,
     "loudness_drift_db_max": 1.0,
+    "spectral_distance_max": 0.35,
+    "clipping_fraction_max": 0.001,
     "zero_identity_max_abs": 1e-6,
 }
 
@@ -185,6 +187,14 @@ def adapter_v2_gate(metrics: dict) -> dict:
             metrics.get("loudness_drift_db", float("inf"))
         )
         <= ADAPTER_V2_GATE_THRESHOLDS["loudness_drift_db_max"],
+        "spectrum_is_not_destroyed": float(
+            metrics.get("spectral_distance", float("inf"))
+        )
+        <= ADAPTER_V2_GATE_THRESHOLDS["spectral_distance_max"],
+        "output_is_not_clipping": float(
+            metrics.get("clipping_fraction", float("inf"))
+        )
+        <= ADAPTER_V2_GATE_THRESHOLDS["clipping_fraction_max"],
     }
     passed = all(checks.values())
     return {
