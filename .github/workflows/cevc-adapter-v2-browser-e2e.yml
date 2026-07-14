@@ -62,6 +62,7 @@ jobs:
         run: |
           python -m py_compile \
             tests/cevc_adapter_v2_e2e_fixture.py \
+            tests/cevc_adapter_v2_e2e_strengthen_fixture.py \
             tests/cevc_adapter_v2_e2e_app.py \
             tests/cevc_adapter_v2_e2e_browser.py
 
@@ -70,6 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           python -u -m tests.cevc_adapter_v2_e2e_fixture 2>&1 | tee /tmp/cevc_adapter_v2_e2e_fixture.log
+          python -u -m tests.cevc_adapter_v2_e2e_strengthen_fixture 2>&1 | tee -a /tmp/cevc_adapter_v2_e2e_fixture.log
           test -s logs/cevc_e2e/public_jfk.flac
           test -s logs/cevc_e2e/G_1.pth
           test -s logs/cevc_e2e/cevc2b/critic/roughness_critic_best.pth
