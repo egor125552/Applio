@@ -1,4 +1,4 @@
-"""Operate the CEVC 2B workflow through Chromium and validate training outputs."""
+"""Operate the full CEVC 2B workflow through Chromium and validate training outputs."""
 
 from __future__ import annotations
 
@@ -16,11 +16,52 @@ EXPERIMENT = ROOT / "logs" / "cevc_e2e"
 PORT = int(os.environ.get("CEVC_E2E_PORT", "7867"))
 URL = f"http://127.0.0.1:{PORT}"
 EXPECTED_CLEAN_TRAIN_SLICES = 8
-EXPECTED_EPOCHS = 30
+EXPECTED_ALL_TRAIN_SLICES = 24
+EXPECTED_CRITIC_EPOCHS = 80
+EXPECTED_ADAPTER_EPOCHS = 30
 MINIMUM_OPTIMIZER_STEPS = 20
 
 
-def _assert_training_artifacts() -> None:
+def _assert_critic_artifacts() -> dict:
+    output = EXPERIMENT / "cevc2b" / "critic"
+    summary_path = output / "critic_summary.json"
+    history_path = output / "critic_history.json"
+    best_path = output / "roughness_critic_best.pth"
+    final_path = output / "roughness_critic_final.pth"
+    for path in (summary_path, history_path, best_path, final_path):
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise AssertionError(f"Missing or empty critic artifact: {path}")
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    if summary.get("format") != "cevc-critic-human-summary-v1":
+        raise AssertionError(f"Unexpected critic summary: {summary.get('format')}")
+    if summary.get("accepted_for_adapter_v2") is not True:
+        raise AssertionError(f"Browser-trained critic was not accepted: {summary}")
+    if len(history) != EXPECTED_CRITIC_EPOCHS:
+        raise AssertionError(
+            f"Critic completed {len(history)} epochs; expected {EXPECTED_CRITIC_EPOCHS}"
+        )
+    batch_size = int(summary["settings"]["batch_size"])
+    steps = len(history) * math.ceil(EXPECTED_ALL_TRAIN_SLICES / batch_size)
+    if steps < MINIMUM_OPTIMIZER_STEPS:
+        raise AssertionError(f"Critic completed only {steps} optimizer steps")
+    if not all(math.isfinite(float(item["train_loss"])) for item in history):
+        raise AssertionError("Critic history contains non-finite loss")
+    return {
+        "epochs": len(history),
+        "batch_size": batch_size,
+        "optimizer_steps_completed": steps,
+        "best_epoch": int(summary["best_epoch"]),
+        "accepted": True,
+        "summary": str(summary_path),
+        "history": str(history_path),
+        "best_checkpoint": str(best_path),
+        "final_checkpoint": str(final_path),
+    }
+
+
+def _assert_adapter_artifacts() -> dict:
     output = EXPERIMENT / "cevc2b" / "adapter_v2"
     summary_path = output / "adapter_v2_summary.json"
     history_path = output / "adapter_v2_history.json"
@@ -36,9 +77,9 @@ def _assert_training_artifacts() -> None:
     history = json.loads(history_path.read_text(encoding="utf-8"))
     if summary.get("format") != "cevc-adapter-v2-human-summary-v1":
         raise AssertionError(f"Unexpected summary format: {summary.get('format')}")
-    if len(history) != EXPECTED_EPOCHS:
+    if len(history) != EXPECTED_ADAPTER_EPOCHS:
         raise AssertionError(
-            f"Adapter v2 completed {len(history)} epochs; expected {EXPECTED_EPOCHS}"
+            f"Adapter v2 completed {len(history)} epochs; expected {EXPECTED_ADAPTER_EPOCHS}"
         )
 
     batch_size = int(summary["settings"]["batch_size"])
@@ -46,7 +87,7 @@ def _assert_training_artifacts() -> None:
     optimizer_steps = len(history) * batches_per_epoch
     if optimizer_steps < MINIMUM_OPTIMIZER_STEPS:
         raise AssertionError(
-            f"E2E training executed only {optimizer_steps} optimizer steps; "
+            f"Adapter v2 executed only {optimizer_steps} optimizer steps; "
             f"need at least {MINIMUM_OPTIMIZER_STEPS}"
         )
     if not all(math.isfinite(float(item["train_loss"])) for item in history):
@@ -60,26 +101,20 @@ def _assert_training_artifacts() -> None:
     if batch_selection.get("automatic_gpu_probe") is not False:
         raise AssertionError(f"CPU E2E incorrectly claims a GPU probe: {batch_selection}")
 
-    report = {
-        "format": "cevc-adapter-v2-browser-e2e-v2",
-        "browser": "chromium",
-        "public_fixture": "openai/whisper tests/jfk.flac",
-        "completed_epochs": len(history),
+    return {
+        "epochs": len(history),
         "batch_size": batch_size,
         "batches_per_epoch": batches_per_epoch,
         "optimizer_steps_completed": optimizer_steps,
-        "minimum_required_optimizer_steps": MINIMUM_OPTIMIZER_STEPS,
+        "best_epoch": int(summary["best_epoch"]),
+        "training_result": summary.get("result"),
         "production_prior_latent_path": True,
         "summary": str(summary_path),
         "history": str(history_path),
         "best_checkpoint": str(best_path),
         "final_checkpoint": str(final_path),
         "export_adapter": str(export_path),
-        "training_result": summary.get("result"),
     }
-    report_path = output / "browser_e2e_report.json"
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, indent=2), flush=True)
 
 
 def main() -> None:
@@ -88,13 +123,12 @@ def main() -> None:
         page = browser.new_page()
         page.goto(URL, wait_until="networkidle", timeout=120_000)
 
-        heading = page.get_by_text("CEVC 2B Lab", exact=False).first
-        expect(heading).to_be_visible(timeout=60_000)
-
-        # The fixture is the only experiment in the clean CI workspace, so the
-        # production dropdown discovers and selects it exactly as in Colab.
-        experiment = page.get_by_label("Папка голосового эксперимента")
-        expect(experiment).to_be_visible(timeout=30_000)
+        expect(page.get_by_text("CEVC 2B Lab", exact=False).first).to_be_visible(
+            timeout=60_000
+        )
+        expect(page.get_by_label("Папка голосового эксперимента")).to_be_visible(
+            timeout=30_000
+        )
 
         page.get_by_role("button", name="Проверить данные и подготовить CEVC 2B").click()
         prepare_status = page.get_by_label("Что произошло и что делать дальше")
@@ -112,6 +146,20 @@ def main() -> None:
         if clean_train != EXPECTED_CLEAN_TRAIN_SLICES:
             raise AssertionError(f"Unexpected clean training split: {clean_train}")
 
+        # This is intentionally the same critic button exposed to the user. The
+        # fixture checkpoint is overwritten by real production critic training.
+        page.get_by_role(
+            "button", name="Обучить Roughness Critic — повторно обычно не нужно"
+        ).click()
+        critic_status = page.get_by_label("Итог обучения и следующий шаг")
+        expect(critic_status).to_have_value(
+            re.compile("Обучение завершено"), timeout=1_800_000
+        )
+        critic_text = critic_status.input_value()
+        if "CRITIC ПРИНЯТ" not in critic_text:
+            raise AssertionError(f"Critic browser training failed acceptance: {critic_text}")
+        critic_report = _assert_critic_artifacts()
+
         page.get_by_role("button", name="Проверить готовность к Adapter v2").click()
         ready_status = page.get_by_label("Готовность к обучению")
         expect(ready_status).to_have_value(
@@ -125,12 +173,30 @@ def main() -> None:
         )
         if "ошиб" in adapter_status.input_value().lower():
             raise AssertionError(adapter_status.input_value())
+        adapter_report = _assert_adapter_artifacts()
 
-        _assert_training_artifacts()
-        page.screenshot(
-            path=str(EXPERIMENT / "cevc2b" / "adapter_v2" / "browser_final.png"),
-            full_page=True,
+        output = EXPERIMENT / "cevc2b" / "adapter_v2"
+        report = {
+            "format": "cevc-full-browser-e2e-v1",
+            "browser": "chromium",
+            "public_fixture": "openai/whisper tests/jfk.flac",
+            "stage1": {
+                "completed": True,
+                "synthetic_audio_targets": False,
+                "clean_train_slices": EXPECTED_CLEAN_TRAIN_SLICES,
+            },
+            "critic": critic_report,
+            "adapter_v2": adapter_report,
+            "total_optimizer_steps_completed": (
+                critic_report["optimizer_steps_completed"]
+                + adapter_report["optimizer_steps_completed"]
+            ),
+        }
+        (output / "browser_e2e_report.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
         )
+        print(json.dumps(report, indent=2), flush=True)
+        page.screenshot(path=str(output / "browser_final.png"), full_page=True)
         browser.close()
 
 
