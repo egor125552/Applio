@@ -120,32 +120,40 @@ Inference harness:
 - [x] Add endpoint-discontinuity and duration regression tests.
 - [x] Save a machine-readable audio comparison report.
 
-Data reuse and supervision implementation:
+Data reuse and real-only supervision:
 
 - [x] Add a separate `CEVC 2B Lab` tab so standard Train and Inference remain uncluttered.
 - [x] Implement train/validation splitting by contiguous source-time tails rather than random neighbouring slices.
-- [x] Implement deterministic clean pseudo-pairs at roughness `0.25`, `0.55` and `0.85` with exact sample-count preservation and approximate RMS preservation.
-- [x] Store the generated dataset and manifest below `logs/<experiment>/cevc2b` so Google Drive retains them.
-- [x] Keep real rough and mixed slices as natural style references rather than synthetic targets.
+- [x] Remove synthetic noisy WAV files as critic or adapter training targets.
+- [x] Build a real roughness reference profile from actual clean, mixed and rough slices.
+- [x] Save median clean/mixed/rough normalized spectra and the real rough-minus-clean spectral delta as NPZ and JSON.
+- [x] Reuse extracted energy, spectral tilt, HNR, band aperiodicity and F0 instability to save real rough-minus-clean expressive deltas.
+- [x] Provide clean, spectral-only diagnostic, real mixed and real rough preview WAVs.
+- [x] Mark the spectral-only preview explicitly as diagnostic and never a training target.
 - [x] Implement a differentiable waveform Roughness Critic with scalar score and clean/mixed/rough classification heads.
-- [x] Implement critic training with real-label, pseudo-target and monotonic-ranking losses.
+- [x] Train the critic only from real slices with balanced class batches and ordinal clean < mixed < rough loss.
+- [x] Apply the same random gain, EQ, low-level noise and polarity augmentation across every class to reduce simple recording/noise shortcuts.
 - [x] Save best/final critic checkpoints and machine-readable history.
-- [x] Add deterministic pseudo-pair, contiguous split, critic forward/backward and one-epoch checkpoint tests.
-- [x] Pass CEVC checks run `29333237738` and full Colab dependency/UI smoke run `29333237748`.
-- [ ] Generate the real Experiment 2B pseudo-pairs for `logs/egor` on Colab.
-- [ ] Train and validate the real Roughness Critic on Tesla T4.
+- [x] Copy only UI artifacts to `/tmp`; persistent profile, manifest and checkpoints remain on Google Drive.
+- [x] Add full data checks for every source slice, class coverage, split validity, profile artifacts, preview length and RMS preservation.
+- [x] Add real-profile numerical determinism, critic forward/backward and one-epoch real-only checkpoint tests.
+- [x] Reproduce the Google Drive symlink path and run Stage 1 outputs through Gradio `async_move_files_to_cache`.
+- [x] Pass CEVC checks run `29337035534` and full Colab/Gradio smoke run `29337035565`.
+- [ ] Generate the real profile and split for `logs/egor` on Colab.
+- [ ] Train and validate the real-only Roughness Critic on Tesla T4.
 - [ ] Freeze the accepted critic checkpoint for Adapter v2 supervision.
 
 Adapter v2 objective:
 
-- [ ] Add random low/high control pairs from one latent.
-- [ ] Add monotonic roughness-ranking loss through the frozen critic.
+- [ ] Generate random low/high controls from one shared latent.
+- [ ] Add monotonic roughness-ranking loss through the frozen real-only critic.
+- [ ] Match movement toward the saved real roughness spectrum and expressive-feature deltas without treating EQ output as ground truth.
 - [ ] Add content, F0/voicing and loudness consistency.
 - [ ] Add multi-resolution STFT, HNR and band-aperiodicity losses incrementally.
-- [ ] Prevent simple loudness reduction or spectral darkening from satisfying roughness supervision.
+- [ ] Prevent simple loudness reduction, broadband noise or spectral darkening from satisfying roughness supervision.
 - [ ] Keep the first v2 attempt at 60k parameters; increase to 200–300k only if the direction is correct.
 - [ ] Use the approximately 1.03M-parameter configuration only after the acoustic gate is passed at smaller capacity.
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. The one-latent measurement path, Experiment 2B dataset builder and Roughness Critic training path are implemented and repository-tested. No new user recordings are required. The next gate is a real Colab run of Stage 1 and Stage 2 in `CEVC 2B Lab`; Adapter v2 training remains intentionally locked until the critic demonstrates useful validation error, monotonic pseudo-pair ordering and clean/mixed/rough separation.
+Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. The one-latent A/B path, Drive-safe Gradio exports, real-only dataset split, real roughness profile and real-only critic training path are repository-tested. No synthetic noisy audio is accepted as a rough voice target, and no new user recordings are required. The next gate is a real Colab run of Stage 1 and Stage 2 in `CEVC 2B Lab`; Adapter v2 remains locked until the critic separates actual clean, mixed and rough validation slices in the correct order.
