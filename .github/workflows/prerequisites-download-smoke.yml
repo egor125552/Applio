@@ -1,0 +1,80 @@
+name: Prerequisite download smoke
+
+on:
+  push:
+    branches:
+      - agent/compact-expressive-vc-architecture
+    paths:
+      - "rvc/lib/tools/prerequisites_download.py"
+      - ".github/workflows/prerequisites-download-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download-and-load-rmvpe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install smoke-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests tqdm numpy librosa
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download predictor and ContentVec prerequisites
+        run: |
+          python -u - <<'PY'
+          from rvc.lib.tools.prerequisites_download import prequisites_download_pipeline
+
+          prequisites_download_pipeline(
+              pretraineds_hifigan=False,
+              models=True,
+              exe=False,
+          )
+          PY
+
+      - name: Verify downloaded file sizes
+        run: |
+          python -u - <<'PY'
+          from pathlib import Path
+
+          expected = {
+              "rvc/models/predictors/rmvpe.pt": 10 * 1024 * 1024,
+              "rvc/models/predictors/fcpe.pt": 1 * 1024 * 1024,
+              "rvc/models/embedders/contentvec/pytorch_model.bin": 10 * 1024 * 1024,
+              "rvc/models/embedders/contentvec/config.json": 1,
+          }
+
+          for name, minimum in expected.items():
+              path = Path(name)
+              if not path.is_file():
+                  raise SystemExit(f"Missing prerequisite: {name}")
+              size = path.stat().st_size
+              print(f"{name}: {size} bytes ({size / 1024**2:.2f} MiB)")
+              if size < minimum:
+                  raise SystemExit(
+                      f"Prerequisite is too small: {name}: {size} < {minimum}"
+                  )
+          PY
+
+      - name: Load RMVPE checkpoint on CPU
+        run: |
+          python -u - <<'PY'
+          from rvc.lib.predictors.RMVPE import RMVPE0Predictor
+
+          predictor = RMVPE0Predictor(
+              "rvc/models/predictors/rmvpe.pt",
+              device="cpu",
+          )
+          print("RMVPE checkpoint loaded successfully on CPU.")
+          print(type(predictor.model).__name__)
+          PY
