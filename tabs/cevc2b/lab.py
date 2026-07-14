@@ -143,8 +143,7 @@ def _train_critic(
                 "отличает чистый голос от хриплого и подходит как замороженный "
                 "учитель для Adapter v2. Лучший вариант найден на эпохе "
                 f"{result['best_epoch']}. Следующий шаг: обучение Adapter v2. "
-                "Для передачи результатов используй короткий JSON-отчёт; полная "
-                "история нужна только для подробной диагностики."
+                "Повторно нажимать эту кнопку перед Adapter v2 не требуется."
             )
         else:
             status = (
@@ -192,11 +191,11 @@ def _train_adapter_v2(
     seed,
 ):
     try:
-        from rvc.train.cevc.train_adapter_v2 import train_adapter_v2
+        from rvc.train.cevc.train_adapter_v2_auto import train_adapter_v2_auto
 
         if not experiment_path:
             raise FileNotFoundError("Select a CEVC experiment folder")
-        result = train_adapter_v2(
+        result = train_adapter_v2_auto(
             _absolute(experiment_path),
             epochs=int(epochs),
             batch_size=int(batch_size),
@@ -213,25 +212,39 @@ def _train_adapter_v2(
             ],
             prefix="adapter_v2",
         )
+        ui_probe = None
+        if result.get("batch_probe_path"):
+            ui_probe = publish_files_for_ui(
+                [result["batch_probe_path"]], prefix="adapter_v2_batch_probe"
+            )[0]
+        selected_batch = int(result["selected_batch_size"])
         if result["gate"]["passed"]:
             status = (
                 "Обучение завершено. Результат: ADAPTER V2 ГОТОВ К A/B. "
-                "Автоматические проверки подтвердили правильное направление "
-                "управления, сохранение громкости, сохранность спектра, отсутствие "
-                "клиппинга и точный нулевой режим. Лучший вариант найден на эпохе "
-                f"{result['best_epoch']}. Следующий шаг: открыть CEVC A/B и "
-                "прослушать 0, 0.5 и 1 из одного latent."
+                f"Использован batch {selected_batch}. Автоматические проверки "
+                "подтвердили правильное направление управления, сохранение "
+                "громкости, сохранность спектра, отсутствие клиппинга и точный "
+                f"нулевой режим. Лучший вариант найден на эпохе {result['best_epoch']}. "
+                "Следующий шаг: открыть CEVC A/B и прослушать 0, 0.5 и 1 из "
+                "одного latent."
             )
         else:
             status = (
-                "Обучение завершено, но Adapter v2 пока не прошёл автоматический "
-                "gate. Не запускай финальный A/B как принятый результат. Короткий "
-                "JSON-отчёт показывает, какая защита не сработала."
+                f"Обучение завершено с batch {selected_batch}, но Adapter v2 пока "
+                "не прошёл автоматический gate. Не запускай финальный A/B как "
+                "принятый результат. Короткий JSON-отчёт показывает, какая защита "
+                "не сработала."
             )
-        return status, ui_adapter, ui_summary, ui_history
+        return status, ui_adapter, ui_summary, ui_history, ui_probe
     except Exception as error:
         traceback.print_exc()
-        return f"Обучение Adapter v2 завершилось ошибкой: {error}", None, None, None
+        return (
+            f"Обучение Adapter v2 завершилось ошибкой: {error}",
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def cevc2b_lab_tab():
@@ -308,8 +321,8 @@ def cevc2b_lab_tab():
         "Critic учится на настоящих clean, mixed и rough. Числовая шкала имеет "
         "два надёжных якоря: чистый голос и хриплый голос. Запись с переходами "
         "остаётся отдельным реальным классом, но не принуждается к выдуманной "
-        "середине. Подробные числа записываются в JSON, а интерфейс и консоль "
-        "показывают понятный результат."
+        "середине. После принятого critic переходи к Этапу 3; повторный запуск "
+        "critic перед адаптером не нужен."
     )
     with gr.Accordion("Дополнительные настройки critic", open=False):
         critic_epochs = gr.Slider(
@@ -330,7 +343,7 @@ def cevc2b_lab_tab():
             [32, 64, 96], value=64, label="Размер critic"
         )
 
-    critic_button = gr.Button("Обучить Roughness Critic")
+    critic_button = gr.Button("Обучить Roughness Critic — повторно обычно не нужно")
     critic_status = gr.Textbox(label="Итог обучения и следующий шаг", lines=6)
     with gr.Row():
         critic_checkpoint = gr.File(label="Лучший critic — рабочий checkpoint")
@@ -354,8 +367,8 @@ def cevc2b_lab_tab():
     gr.Markdown(
         "Adapter v2 использует prior latent как на настоящем инференсе. Низкий и "
         "высокий уровни генерируются из одного latent. Базовая RVC-модель и critic "
-        "заморожены. Loss не позволяет выиграть простым падением громкости, "
-        "затемнением, клиппингом или большим разрушением спектра."
+        "заморожены. Режим Auto реально запускает один forward/backward для batch "
+        "32, затем при нехватке памяти пробует 24, 16 и меньшие значения."
     )
     adapter_check_button = gr.Button("Проверить готовность к Adapter v2")
     adapter_check_status = gr.Textbox(label="Готовность к обучению", lines=3)
@@ -368,10 +381,24 @@ def cevc2b_lab_tab():
 
     with gr.Accordion("Дополнительные настройки Adapter v2", open=False):
         adapter_epochs = gr.Slider(
-            5, 80, value=30, step=1, label="Количество эпох Adapter v2"
+            1, 80, value=30, step=1, label="Количество эпох Adapter v2"
         )
-        adapter_batch = gr.Radio(
-            [1, 2, 4, 6, 8], value=4, label="Размер батча полной RVC-модели"
+        adapter_batch = gr.Dropdown(
+            choices=[
+                ("Авто: проверить 32 → 24 → 16 → 12 → 8 → 6 → 4 → 2 → 1", 0),
+                ("32", 32),
+                ("24", 24),
+                ("16", 16),
+                ("12", 12),
+                ("8", 8),
+                ("6", 6),
+                ("4", 4),
+                ("2", 2),
+                ("1", 1),
+            ],
+            value=0,
+            label="Размер батча полной RVC-модели",
+            interactive=True,
         )
         adapter_lr = gr.Number(value=0.0001, label="Скорость обучения Adapter v2")
         adapter_gpu = gr.Textbox(value="0", label="Номер GPU")
@@ -380,9 +407,9 @@ def cevc2b_lab_tab():
             label="Экономить видеопамять ценой более медленного обучения",
         )
         gr.Markdown(
-            "Для Tesla T4 оставь 30 эпох, батч 4 и скорость 0.0001. Батч 32 здесь "
-            "не подходит: внутри шага работают полная RVC-модель, два "
-            "декодирования и critic."
+            "Для Tesla T4 оставь Auto. Проверка использует тот же FP16, два "
+            "декодирования, critic и backward, что и обучение. Поэтому выбранный "
+            "batch основан на реальном пике памяти, а не на предположении."
         )
 
     adapter_button = gr.Button("Обучить Adapter v2")
@@ -391,6 +418,7 @@ def cevc2b_lab_tab():
         adapter_checkpoint = gr.File(label="Рабочий Adapter v2 для CEVC A/B")
         adapter_summary = gr.File(label="Короткий отчёт для передачи мне (.json)")
         adapter_history = gr.File(label="Полная техническая история (.json)")
+        adapter_batch_report = gr.File(label="Отчёт проверки видеопамяти (.json)")
     adapter_button.click(
         _train_adapter_v2,
         inputs=[
@@ -407,5 +435,6 @@ def cevc2b_lab_tab():
             adapter_checkpoint,
             adapter_summary,
             adapter_history,
+            adapter_batch_report,
         ],
     )
