@@ -120,6 +120,9 @@ class CEVCExperiment2BTest(unittest.TestCase):
             self.assertEqual(clean_sr, spectral_sr)
             self.assertEqual(clean.shape, spectral.shape)
             self.assertGreater(float(np.max(np.abs(clean - spectral))), 1e-5)
+            clean_rms = float(np.sqrt(np.mean(clean**2)))
+            spectral_rms = float(np.sqrt(np.mean(spectral**2)))
+            self.assertLess(abs(20 * np.log10(spectral_rms / clean_rms)), 0.35)
             self.assertTrue(Path(profile["previews"]["real_mixed"]).is_file())
             self.assertTrue(Path(profile["previews"]["real_rough"]).is_file())
 
@@ -135,24 +138,27 @@ class CEVCExperiment2BTest(unittest.TestCase):
             )
             self.assertEqual(validation["validated_source_slices"], 22)
 
-    def test_repeated_profile_preparation_is_deterministic(self):
+    def test_repeated_profile_preparation_is_numerically_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             experiment = self._build_experiment(directory)
             first = prepare_experiment2b(experiment, validation_fraction=0.2, seed=99)
-            first_hashes = {
-                "profile": _sha256(first["real_roughness_profile"]["profile_npz"]),
-                "spectral": _sha256(
-                    first["real_roughness_profile"]["previews"]["spectral_only"]
-                ),
-            }
+            with np.load(first["real_roughness_profile"]["profile_npz"]) as payload:
+                first_arrays = {name: payload[name].copy() for name in payload.files}
+            first_spectral_hash = _sha256(
+                first["real_roughness_profile"]["previews"]["spectral_only"]
+            )
+
             second = prepare_experiment2b(experiment, validation_fraction=0.2, seed=99)
-            second_hashes = {
-                "profile": _sha256(second["real_roughness_profile"]["profile_npz"]),
-                "spectral": _sha256(
-                    second["real_roughness_profile"]["previews"]["spectral_only"]
-                ),
-            }
-            self.assertEqual(first_hashes, second_hashes)
+            with np.load(second["real_roughness_profile"]["profile_npz"]) as payload:
+                second_arrays = {name: payload[name].copy() for name in payload.files}
+            second_spectral_hash = _sha256(
+                second["real_roughness_profile"]["previews"]["spectral_only"]
+            )
+
+            self.assertEqual(first_arrays.keys(), second_arrays.keys())
+            for name in first_arrays:
+                np.testing.assert_array_equal(first_arrays[name], second_arrays[name])
+            self.assertEqual(first_spectral_hash, second_spectral_hash)
 
     def test_ui_exports_copy_external_artifacts_without_moving_sources(self):
         with tempfile.TemporaryDirectory() as external, tempfile.TemporaryDirectory() as cache:
