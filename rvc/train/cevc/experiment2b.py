@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
@@ -90,6 +91,7 @@ def validate_real_only_dataset(experiment, records, split_records, profile):
             "real_profile_json_exists",
             "real_profile_npz_exists",
             "clean_spectral_mixed_rough_previews_exist",
+            "stale_pseudo_pairs_removed",
         ],
     }
 
@@ -108,6 +110,11 @@ def prepare_experiment2b(experiment_dir, validation_fraction=0.2, seed=20260714)
     records = source_manifest.get("files", [])
     if not records:
         raise ValueError("CEVC expressive manifest contains no slices")
+
+    output_dir = experiment / "cevc2b"
+    stale_pseudo_pairs = output_dir / "pseudo_pairs"
+    if stale_pseudo_pairs.exists():
+        shutil.rmtree(stale_pseudo_pairs)
 
     split_map = contiguous_split(records, validation_fraction)
     split_records = [
@@ -130,9 +137,10 @@ def prepare_experiment2b(experiment_dir, validation_fraction=0.2, seed=20260714)
         "new_recordings_required": False,
         "training_policy": "real_audio_only",
         "synthetic_audio_targets": False,
+        "stale_pseudo_pairs_removed": not stale_pseudo_pairs.exists(),
         "synthetic_spectral_preview_is_diagnostic_only": True,
         "source_experiment": str(experiment),
-        "dataset_root": str(experiment / "cevc2b"),
+        "dataset_root": str(output_dir),
         "source_manifest": str(source_manifest_path),
         "split_strategy": "contiguous_tail_per_source_and_label",
         "validation_fraction": float(validation_fraction),
@@ -148,7 +156,6 @@ def prepare_experiment2b(experiment_dir, validation_fraction=0.2, seed=20260714)
     result["validation"] = validate_real_only_dataset(
         experiment, records, split_records, profile
     )
-    output_dir = experiment / "cevc2b"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "experiment2b_manifest.json"
     output_path.write_text(
