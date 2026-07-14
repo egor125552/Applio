@@ -7,6 +7,7 @@ import traceback
 from pathlib import Path
 
 import gradio as gr
+
 from rvc.train.cevc.ui_exports import publish_files_for_ui
 
 
@@ -77,12 +78,10 @@ def _prepare(experiment_path, validation_percent, seed):
             )
         )
         status = (
-            "Experiment 2B real-only dataset completed and validated. "
-            f"Existing slices: {result['slice_count']}; split counts: "
-            f"{result['split_counts']}. Synthetic training targets: disabled. "
-            f"Persistent dataset: {result['dataset_root']}. "
-            "The spectral-only preview is diagnostic and will never be used as a "
-            "rough voice target."
+            "Подготовка завершена. Все существующие реальные срезы проверены и "
+            "разделены на обучение и контроль. Синтетические шумовые записи не "
+            "используются как правильный хрип. Профиль настоящего хриплого голоса "
+            "сохранён на Google Диске. Следующий шаг: обучить Roughness Critic."
         )
         return (
             status,
@@ -96,7 +95,7 @@ def _prepare(experiment_path, validation_percent, seed):
     except Exception as error:
         traceback.print_exc()
         return (
-            f"CEVC 2B preparation failed: {error}",
+            f"Подготовка CEVC 2B не выполнена: {error}",
             None,
             None,
             None,
@@ -116,8 +115,6 @@ def _train_critic(
     seed,
 ):
     try:
-        import torch
-
         from rvc.train.cevc.train_critic import train_roughness_critic
 
         if not experiment_path:
@@ -131,32 +128,34 @@ def _train_critic(
             hidden_channels=int(hidden_channels),
             seed=int(seed),
         )
-        ui_checkpoint, ui_history = publish_files_for_ui(
-            [result["best_checkpoint"], result["history_path"]],
+        ui_checkpoint, ui_summary, ui_history = publish_files_for_ui(
+            [
+                result["best_checkpoint"],
+                result["summary_path"],
+                result["history_path"],
+            ],
             prefix="critic",
         )
-        best_payload = torch.load(
-            result["best_checkpoint"], map_location="cpu", weights_only=False
-        )
-        metrics = best_payload["metrics"]
-        means = metrics["class_mean_scores"]
-        status = (
-            "Clean/rough-anchor Roughness Critic training completed. "
-            f"Best epoch={best_payload['epoch']}; device={result['device']}; "
-            f"parameters={result['parameters']:,}; "
-            f"anchor MAE={metrics['anchor_score_mae']:.4f}; "
-            f"class accuracy={metrics['class_accuracy']:.3f}; "
-            f"clean-to-rough margin={metrics['clean_to_rough_margin']:.3f}; "
-            f"anchor ordered={bool(metrics['anchor_ordered'])}; "
-            f"diagnostic means: clean={means['clean']:.3f}, "
-            f"mixed={means['mixed']:.3f}, rough={means['rough']:.3f}. "
-            "Mixed is a real class but has no fabricated scalar target. "
-            f"Persistent checkpoint: {result['best_checkpoint']}."
-        )
-        return status, ui_checkpoint, ui_history
+        accepted = bool(result["gate"]["accepted"])
+        if accepted:
+            status = (
+                "Обучение завершено. Результат: CRITIC ПРИНЯТ. Он уверенно "
+                "отличает чистый голос от хриплого и подходит как замороженный "
+                "учитель для Adapter v2. Лучший вариант найден на эпохе "
+                f"{result['best_epoch']}. Следующий шаг: обучение Adapter v2. "
+                "Для передачи результатов используй короткий JSON-отчёт; полная "
+                "история нужна только для подробной диагностики."
+            )
+        else:
+            status = (
+                "Обучение завершено. Результат: CRITIC ПОКА НЕ ПРИНЯТ. Он не "
+                "прошёл все контрольные проверки, поэтому Adapter v2 запускать "
+                "рано. Короткий JSON-отчёт объясняет, какая проверка не прошла."
+            )
+        return status, ui_checkpoint, ui_summary, ui_history
     except Exception as error:
         traceback.print_exc()
-        return f"Roughness Critic training failed: {error}", None, None
+        return f"Обучение Roughness Critic завершилось ошибкой: {error}", None, None, None
 
 
 def cevc2b_lab_tab():
@@ -164,52 +163,55 @@ def cevc2b_lab_tab():
     default = experiments[-1] if experiments else ""
 
     gr.Markdown(
-        "## CEVC 2B Lab — real recordings only\n"
-        "The trainable stages use only the existing real clean, mixed and rough "
-        "recordings. No synthetic noisy WAV is treated as a rough voice target. "
-        "Persistent files remain inside the experiment folder on Google Drive; "
-        "temporary UI copies are served locally for Gradio."
+        "## CEVC 2B Lab — реальные записи без шумовых целей\n"
+        "Работа идёт последовательно: сначала проверка данных, затем critic, затем "
+        "Adapter v2. Постоянные файлы сохраняются в папке эксперимента на Google "
+        "Диске. В интерфейс передаются безопасные временные копии."
     )
     with gr.Row():
         experiment = gr.Dropdown(
-            label="CEVC experiment folder",
+            label="Папка голосового эксперимента",
             choices=experiments,
             value=default,
             interactive=True,
             allow_custom_value=True,
         )
-        refresh = gr.Button("Refresh experiments")
+        refresh = gr.Button("Обновить список экспериментов")
     refresh.click(
         _refresh, inputs=[experiment], outputs=[experiment], show_progress=False
     )
 
-    gr.Markdown("### Stage 1 — real split and roughness reference profile")
-    with gr.Accordion("Dataset preparation settings", open=False):
+    gr.Markdown("### Этап 1 — проверить записи и построить профиль настоящего хрипа")
+    with gr.Accordion("Дополнительные настройки подготовки", open=False):
         validation = gr.Slider(
             10,
             35,
             value=20,
             step=1,
-            label="Contiguous validation tail (%)",
+            label="Доля контрольных записей в конце каждого исходника (%)",
         )
-        seed = gr.Number(value=20260714, precision=0, label="Deterministic seed")
+        seed = gr.Number(
+            value=20260714,
+            precision=0,
+            label="Фиксированный seed для повторяемости",
+        )
         gr.Markdown(
-            "Stage 1 builds a real clean/mixed/rough train-validation split and "
-            "extracts a reference profile from the actual rough recordings. The "
-            "spectral-only preview is an EQ diagnostic, not a training target."
+            "Обычные настройки уже подобраны. Менять их без причины не нужно. "
+            "Спектральный preview служит только для прослушивания и никогда не "
+            "считается правильной хриплой целью."
         )
 
-    prepare_button = gr.Button("Prepare and validate real CEVC 2B dataset")
-    prepare_status = gr.Textbox(label="Dataset preparation status")
+    prepare_button = gr.Button("Проверить данные и подготовить CEVC 2B")
+    prepare_status = gr.Textbox(label="Что произошло и что делать дальше", lines=4)
     with gr.Row():
-        manifest = gr.File(label="Experiment 2B manifest (.json)")
-        profile_file = gr.File(label="Real roughness profile (.json)")
-    gr.Markdown("#### Reference comparison")
+        manifest = gr.File(label="Технический manifest подготовки (.json)")
+        profile_file = gr.File(label="Профиль настоящего хриплого голоса (.json)")
+    gr.Markdown("#### Контрольное прослушивание")
     with gr.Row():
-        clean = gr.Audio(label="Real clean reference")
-        spectral = gr.Audio(label="Clean + spectral profile only — diagnostic")
-        mixed = gr.Audio(label="Real mixed reference")
-        rough = gr.Audio(label="Real rough reference")
+        clean = gr.Audio(label="Настоящий чистый голос")
+        spectral = gr.Audio(label="Только спектральная окраска — не настоящий хрип")
+        mixed = gr.Audio(label="Настоящая запись с переходами")
+        rough = gr.Audio(label="Настоящий хриплый голос")
 
     prepare_button.click(
         _prepare,
@@ -225,39 +227,39 @@ def cevc2b_lab_tab():
         ],
     )
 
-    gr.Markdown("### Stage 2 — train the real-only Roughness Critic")
+    gr.Markdown("### Этап 2 — обучить проверяющую модель Roughness Critic")
     gr.Markdown(
-        "The scalar roughness axis is anchored only by real clean and real rough "
-        "recordings. Mixed remains a supervised real class, but it is not forced "
-        "to an invented score of 0.50 because it contains time-varying transitions. "
-        "The same random gain, EQ and low-level noise augmentation is applied across "
-        "all classes, so the critic cannot pass merely by detecting recording "
-        "loudness or broadband noise."
+        "Critic учится на настоящих clean, mixed и rough. Числовая шкала имеет "
+        "два надёжных якоря: чистый голос и хриплый голос. Запись с переходами "
+        "остаётся отдельным реальным классом, но не принуждается к выдуманной "
+        "середине. Подробные числа записываются в JSON, а интерфейс и консоль "
+        "показывают понятный результат."
     )
-    with gr.Accordion("Critic training settings", open=False):
+    with gr.Accordion("Дополнительные настройки critic", open=False):
         critic_epochs = gr.Slider(
-            5, 150, value=80, step=1, label="Critic epochs"
+            5, 150, value=80, step=1, label="Количество эпох обучения critic"
         )
         critic_batch = gr.Slider(
-            4, 32, value=32, step=1, label="Real-item batch size"
+            4, 32, value=32, step=1, label="Размер батча"
         )
-        critic_lr = gr.Number(value=0.0003, label="Critic learning rate")
+        critic_lr = gr.Number(value=0.0003, label="Скорость обучения")
         critic_crop = gr.Slider(
             1.0,
             3.0,
             value=2.0,
             step=0.25,
-            label="Training crop (seconds)",
+            label="Длительность анализируемого фрагмента (секунды)",
         )
         critic_hidden = gr.Radio(
-            [32, 64, 96], value=64, label="Critic hidden channels"
+            [32, 64, 96], value=64, label="Размер critic"
         )
 
-    critic_button = gr.Button("Train clean/rough-anchor Roughness Critic")
-    critic_status = gr.Textbox(label="Roughness Critic status")
+    critic_button = gr.Button("Обучить Roughness Critic")
+    critic_status = gr.Textbox(label="Итог обучения и следующий шаг", lines=6)
     with gr.Row():
-        critic_checkpoint = gr.File(label="Best Roughness Critic checkpoint")
-        critic_history = gr.File(label="Roughness Critic history (.json)")
+        critic_checkpoint = gr.File(label="Лучший critic — рабочий checkpoint")
+        critic_summary = gr.File(label="Короткий отчёт для передачи мне (.json)")
+        critic_history = gr.File(label="Полная техническая история (.json)")
     critic_button.click(
         _train_critic,
         inputs=[
@@ -269,12 +271,12 @@ def cevc2b_lab_tab():
             critic_hidden,
             seed,
         ],
-        outputs=[critic_status, critic_checkpoint, critic_history],
+        outputs=[critic_status, critic_checkpoint, critic_summary, critic_history],
     )
 
     gr.Markdown(
-        "### Stage 3 — Adapter v2\n"
-        "Adapter v2 will be trained against the frozen clean/rough-anchor critic "
-        "and the saved real roughness profile, with content, F0 and loudness "
-        "constraints."
+        "### Этап 3 — Adapter v2\n"
+        "Этот этап ещё не реализован в интерфейсе. Он будет разблокирован только "
+        "для принятого critic и будет обучать адаптер с сохранением слов, высоты "
+        "голоса, громкости и точного нулевого режима."
     )
