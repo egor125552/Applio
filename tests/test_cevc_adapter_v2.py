@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from rvc.train.cevc.adapter_v2_batch_policy import choose_largest_fitting_batch
 from rvc.train.cevc.adapter_v2_objective import (
     adapter_v2_gate,
     adapter_v2_losses,
@@ -48,6 +49,30 @@ class AdapterV2Test(unittest.TestCase):
         converted.square().mean().backward()
         self.assertIsNotNone(waveform.grad)
         self.assertTrue(torch.isfinite(waveform.grad).all())
+
+    def test_automatic_batch_falls_back_only_on_cuda_oom(self):
+        attempted = []
+
+        def probe(candidate):
+            attempted.append(candidate)
+            if candidate > 16:
+                raise RuntimeError("CUDA out of memory while allocating tensor")
+            return {"peak_allocated_gib": 11.2}
+
+        selected, trials = choose_largest_fitting_batch(
+            probe, candidates=(32, 24, 16, 8)
+        )
+        self.assertEqual(selected, 16)
+        self.assertEqual(attempted, [32, 24, 16])
+        self.assertEqual([item["fits"] for item in trials], [False, False, True])
+        self.assertEqual(trials[-1]["peak_allocated_gib"], 11.2)
+
+    def test_automatic_batch_does_not_hide_unrelated_errors(self):
+        def probe(_candidate):
+            raise ModuleNotFoundError("No module named mel_processing")
+
+        with self.assertRaisesRegex(ModuleNotFoundError, "mel_processing"):
+            choose_largest_fitting_batch(probe, candidates=(32, 16, 8))
 
     def test_adapter_gate_pass_and_fail(self):
         passed = adapter_v2_gate(
