@@ -17,9 +17,27 @@ PORT = int(os.environ.get("CEVC_E2E_PORT", "7867"))
 URL = f"http://127.0.0.1:{PORT}"
 EXPECTED_CLEAN_TRAIN_SLICES = 8
 EXPECTED_ALL_TRAIN_SLICES = 24
-EXPECTED_CRITIC_EPOCHS = 80
+EXPECTED_CRITIC_EPOCHS = 100
+EXPECTED_CRITIC_BATCH = 8
 EXPECTED_ADAPTER_EPOCHS = 30
 MINIMUM_OPTIMIZER_STEPS = 20
+
+
+def _set_gradio_value(page, label: str, value) -> None:
+    """Change a Gradio range/number input exactly as a browser user would."""
+
+    control = page.get_by_label(label, exact=True)
+    expect(control).to_be_visible(timeout=30_000)
+    control.evaluate(
+        """
+        (element, nextValue) => {
+          element.value = String(nextValue);
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        """,
+        value,
+    )
 
 
 def _assert_critic_artifacts() -> dict:
@@ -43,6 +61,10 @@ def _assert_critic_artifacts() -> dict:
             f"Critic completed {len(history)} epochs; expected {EXPECTED_CRITIC_EPOCHS}"
         )
     batch_size = int(summary["settings"]["batch_size"])
+    if batch_size != EXPECTED_CRITIC_BATCH:
+        raise AssertionError(
+            f"Browser did not apply critic batch {EXPECTED_CRITIC_BATCH}: {batch_size}"
+        )
     steps = len(history) * math.ceil(EXPECTED_ALL_TRAIN_SLICES / batch_size)
     if steps < MINIMUM_OPTIMIZER_STEPS:
         raise AssertionError(f"Critic completed only {steps} optimizer steps")
@@ -146,8 +168,13 @@ def main() -> None:
         if clean_train != EXPECTED_CLEAN_TRAIN_SLICES:
             raise AssertionError(f"Unexpected clean training split: {clean_train}")
 
-        # This is intentionally the same critic button exposed to the user. The
-        # fixture checkpoint is overwritten by real production critic training.
+        # Change the same controls a user changes in Gradio. Batch 8 gives three
+        # real optimizer steps per epoch, for 300 critic steps in this E2E run.
+        _set_gradio_value(page, "Количество эпох обучения critic", EXPECTED_CRITIC_EPOCHS)
+        _set_gradio_value(page, "Размер батча", EXPECTED_CRITIC_BATCH)
+        _set_gradio_value(page, "Скорость обучения", 0.0005)
+        _set_gradio_value(page, "Длительность анализируемого фрагмента (секунды)", 1.0)
+
         page.get_by_role(
             "button", name="Обучить Roughness Critic — повторно обычно не нужно"
         ).click()
