@@ -60,6 +60,7 @@ import rvc.lib.zluda
 
 # Import Tabs
 from tabs.inference.inference import inference_tab
+from tabs.cevc.cevc import cevc_tab
 from tabs.train.train import train_tab
 from tabs.extra.extra import extra_tab
 from tabs.report.report import report_tab
@@ -139,6 +140,9 @@ with gr.Blocks(
     )
     with gr.Tab(i18n("Inference")):
         inference_tab()
+
+    with gr.Tab("CEVC A/B"):
+        cevc_tab()
 
     with gr.Tab(i18n("Training")):
         train_tab()
