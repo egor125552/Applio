@@ -8,10 +8,8 @@ import numpy as np
 import soundfile as sf
 
 from rvc.train.cevc.experiment2b import (
-    EXPECTED_STRENGTHS,
     prepare_experiment2b,
-    synthesize_roughness,
-    validate_prepared_experiment2b,
+    validate_real_only_dataset,
 )
 from rvc.train.cevc.ui_exports import publish_files_for_ui
 
@@ -21,56 +19,57 @@ def _sha256(path):
 
 
 class CEVCExperiment2BTest(unittest.TestCase):
-    def test_synthetic_roughness_is_deterministic_same_length_and_ordered(self):
-        sample_rate = 16000
-        time = np.arange(sample_rate, dtype=np.float32) / sample_rate
-        source = (
-            0.16 * np.sin(2 * np.pi * 170 * time)
-            + 0.04 * np.sin(2 * np.pi * 340 * time)
-        ).astype(np.float32)
-
-        variants = [
-            synthesize_roughness(source, sample_rate, strength, 1234)
-            for strength in (0.25, 0.55, 0.85)
-        ]
-        repeated = synthesize_roughness(source, sample_rate, 0.85, 1234)
-        np.testing.assert_array_equal(variants[-1], repeated)
-
-        differences = []
-        source_rms = float(np.sqrt(np.mean(source**2)))
-        for output in variants:
-            self.assertEqual(output.shape, source.shape)
-            self.assertTrue(np.isfinite(output).all())
-            self.assertLessEqual(float(np.max(np.abs(output))), 0.985001)
-            output_rms = float(np.sqrt(np.mean(output**2)))
-            self.assertLess(abs(20 * np.log10(output_rms / source_rms)), 0.35)
-            differences.append(float(np.sqrt(np.mean((output - source) ** 2))))
-        self.assertLess(differences[0], differences[1])
-        self.assertLess(differences[1], differences[2])
-
     def _build_experiment(self, directory):
         experiment = Path(directory)
         audio_dir = experiment / "sliced_audios_16k"
+        expressive_dir = experiment / "expressive"
         audio_dir.mkdir(parents=True)
+        expressive_dir.mkdir(parents=True)
         records = []
         sample_rate = 16000
-        time = np.arange(3200, dtype=np.float32) / sample_rate
-        labels = (("clean", 0, 10), ("rough", 1, 6), ("mixed", 2, 6))
-        for label, source_index, count in labels:
+        time = np.arange(6400, dtype=np.float32) / sample_rate
+        settings = (
+            ("clean", 0, 10, 155),
+            ("mixed", 1, 6, 175),
+            ("rough", 2, 6, 195),
+        )
+        feature_centers = {
+            "clean": np.array([0.0, 1.0, 1.5, -0.8, -0.5], dtype=np.float32),
+            "mixed": np.array([0.1, 0.2, 0.2, 0.1, 0.2], dtype=np.float32),
+            "rough": np.array([0.2, -0.8, -1.2, 1.0, 1.1], dtype=np.float32),
+        }
+        for label, source_index, count, frequency in settings:
             for segment in range(count):
                 name = f"0_{source_index}_{segment}.wav"
-                audio = (
-                    0.13 * np.sin(2 * np.pi * (150 + source_index * 20) * time)
-                    + 0.02 * np.sin(2 * np.pi * (310 + segment) * time)
+                phase = segment * 0.17
+                audio = 0.13 * np.sin(2 * np.pi * frequency * time + phase)
+                audio += 0.035 * np.sin(2 * np.pi * frequency * 2 * time)
+                if label == "mixed":
+                    audio += 0.008 * np.random.default_rng(segment).standard_normal(time.size)
+                    audio += 0.012 * np.sin(2 * np.pi * frequency * 0.5 * time)
+                elif label == "rough":
+                    rng = np.random.default_rng(segment + 100)
+                    audio += 0.018 * rng.standard_normal(time.size)
+                    audio += 0.022 * np.sin(2 * np.pi * frequency * 0.5 * time)
+                    audio *= 1.0 + 0.08 * np.sin(2 * np.pi * 23 * time)
+                sf.write(
+                    audio_dir / name,
+                    audio.astype(np.float32),
+                    sample_rate,
+                    subtype="FLOAT",
+                )
+                features = np.tile(feature_centers[label], (40, 1))
+                features += np.random.default_rng(segment).normal(
+                    0, 0.01, size=features.shape
                 ).astype(np.float32)
-                sf.write(audio_dir / name, audio, sample_rate, subtype="FLOAT")
+                np.save(expressive_dir / f"{name}.npy", features, allow_pickle=False)
                 records.append(
                     {
                         "file": name,
                         "source_index": source_index,
                         "source_filename": f"{label}.wav",
                         "label_hint": label,
-                        "frames": 20,
+                        "frames": 40,
                     }
                 )
         (experiment / "cevc_expressive_manifest.json").write_text(
@@ -78,7 +77,7 @@ class CEVCExperiment2BTest(unittest.TestCase):
         )
         return experiment
 
-    def test_prepares_and_validates_complete_dataset(self):
+    def test_prepares_real_only_split_and_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             experiment = self._build_experiment(directory)
             result = prepare_experiment2b(
@@ -87,14 +86,14 @@ class CEVCExperiment2BTest(unittest.TestCase):
                 seed=77,
             )
 
+            self.assertEqual(result["format"], "cevc-experiment2b-real-only-v1")
             self.assertFalse(result["new_recordings_required"])
-            self.assertEqual(result["format"], "cevc-experiment2b-dataset-v2")
-            self.assertTrue(result["shared_perturbation_seed_per_pair"])
-            self.assertEqual(result["slice_count"], 22)
-            self.assertEqual(result["pseudo_pair_count"], 10)
+            self.assertEqual(result["training_policy"], "real_audio_only")
+            self.assertFalse(result["synthetic_audio_targets"])
+            self.assertEqual(result["pseudo_pair_count"], 0)
+            self.assertEqual(result["pseudo_pairs"], [])
             self.assertEqual(result["validation"]["status"], "passed")
-            self.assertEqual(result["validation"]["validated_wav_files"], 40)
-            self.assertTrue(Path(result["manifest_path"]).is_file())
+            self.assertEqual(result["slice_count"], 22)
 
             clean_validation = [
                 row["file"]
@@ -104,56 +103,68 @@ class CEVCExperiment2BTest(unittest.TestCase):
             self.assertEqual(clean_validation, ["0_0_8.wav", "0_0_9.wav"])
             self.assertEqual(result["split_counts"]["validation"]["clean"], 2)
 
-            for pair in result["pseudo_pairs"]:
-                variants = sorted(pair["variants"], key=lambda item: item["strength"])
-                self.assertEqual(
-                    tuple(round(float(item["strength"]), 2) for item in variants),
-                    EXPECTED_STRENGTHS,
-                )
-                synthetic_seeds = {item["seed"] for item in variants[1:]}
-                self.assertEqual(len(synthetic_seeds), 1)
-                sample_counts = {item["metrics"]["samples"] for item in variants}
-                self.assertEqual(sample_counts, {pair["sample_count"]})
-                differences = [
-                    item["metrics"]["difference_rms"] for item in variants[1:]
-                ]
-                self.assertLess(differences[0], differences[1])
-                self.assertLess(differences[1], differences[2])
-                for item in variants:
-                    self.assertTrue(Path(item["path"]).is_file())
+            profile = result["real_roughness_profile"]
+            self.assertEqual(profile["training_policy"], "real_audio_only")
+            self.assertFalse(profile["spectral_preview_is_training_target"])
+            self.assertTrue(Path(profile["summary_path"]).is_file())
+            self.assertTrue(Path(profile["profile_npz"]).is_file())
+            self.assertIsNotNone(profile["rough_minus_clean_expressive"])
+            self.assertGreater(
+                float(np.linalg.norm(profile["rough_minus_clean_expressive"])), 0.5
+            )
 
-            preview = result["preview"]
-            self.assertEqual(preview["split"], "validation")
-            source, source_sr = sf.read(preview["source"], dtype="float32")
-            strong, strong_sr = sf.read(preview["strong"], dtype="float32")
-            self.assertEqual(source_sr, strong_sr)
-            self.assertEqual(source.shape, strong.shape)
-            self.assertGreater(float(np.max(np.abs(source - strong))), 1e-4)
+            clean, clean_sr = sf.read(profile["previews"]["clean"], dtype="float32")
+            spectral, spectral_sr = sf.read(
+                profile["previews"]["spectral_only"], dtype="float32"
+            )
+            self.assertEqual(clean_sr, spectral_sr)
+            self.assertEqual(clean.shape, spectral.shape)
+            self.assertGreater(float(np.max(np.abs(clean - spectral))), 1e-5)
+            self.assertTrue(Path(profile["previews"]["real_mixed"]).is_file())
+            self.assertTrue(Path(profile["previews"]["real_rough"]).is_file())
 
-            validation = validate_prepared_experiment2b(result)
-            self.assertEqual(validation["validated_pseudo_pairs"], 10)
+            validation = validate_real_only_dataset(
+                experiment,
+                json.loads(
+                    (experiment / "cevc_expressive_manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["files"],
+                result["split_records"],
+                profile,
+            )
+            self.assertEqual(validation["validated_source_slices"], 22)
 
-    def test_repeated_preparation_is_byte_deterministic(self):
+    def test_repeated_profile_preparation_is_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             experiment = self._build_experiment(directory)
             first = prepare_experiment2b(experiment, validation_fraction=0.2, seed=99)
             first_hashes = {
-                item["strength"]: _sha256(item["path"])
-                for item in first["pseudo_pairs"][0]["variants"]
+                "profile": _sha256(first["real_roughness_profile"]["profile_npz"]),
+                "spectral": _sha256(
+                    first["real_roughness_profile"]["previews"]["spectral_only"]
+                ),
             }
             second = prepare_experiment2b(experiment, validation_fraction=0.2, seed=99)
             second_hashes = {
-                item["strength"]: _sha256(item["path"])
-                for item in second["pseudo_pairs"][0]["variants"]
+                "profile": _sha256(second["real_roughness_profile"]["profile_npz"]),
+                "spectral": _sha256(
+                    second["real_roughness_profile"]["previews"]["spectral_only"]
+                ),
             }
             self.assertEqual(first_hashes, second_hashes)
 
     def test_ui_exports_copy_external_artifacts_without_moving_sources(self):
         with tempfile.TemporaryDirectory() as external, tempfile.TemporaryDirectory() as cache:
-            source_json = Path(external) / "manifest.json"
+            source_json = Path(external) / "profile.json"
             source_wav = Path(external) / "preview.wav"
-            source_json.write_text('{"ok": true}', encoding="utf-8")
-            sf.write(source_wav, np.zeros(800, dtype=np.float32), 16000, subtype="FLOAT")
+            source_json.write_text('{"real_only": true}', encoding="utf-8")
+            sf.write(
+                source_wav,
+                np.zeros(800, dtype=np.float32),
+                16000,
+                subtype="FLOAT",
+            )
 
             exported = publish_files_for_ui(
                 [source_json, source_wav], prefix="test", cache_root=cache
