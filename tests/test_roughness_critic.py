@@ -12,7 +12,11 @@ from rvc.lib.algorithm.cevc.roughness_critic import (
     critic_parameter_count,
 )
 from rvc.train.cevc.experiment2b import prepare_experiment2b
-from rvc.train.cevc.train_critic import train_roughness_critic
+from rvc.train.cevc.train_critic import (
+    _anchor_ranking_loss,
+    _anchor_score_loss,
+    train_roughness_critic,
+)
 
 
 class RoughnessCriticTest(unittest.TestCase):
@@ -27,6 +31,28 @@ class RoughnessCriticTest(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(waveform.grad)
         self.assertTrue(torch.isfinite(waveform.grad).all())
+
+    def test_mixed_has_no_fabricated_scalar_target(self):
+        targets = torch.tensor([0.05, 0.50, 0.95])
+        anchors = torch.tensor([True, False, True])
+        first = _anchor_score_loss(
+            torch.tensor([-2.0, -20.0, 2.0]), targets, anchors
+        )
+        second = _anchor_score_loss(
+            torch.tensor([-2.0, 20.0, 2.0]), targets, anchors
+        )
+        self.assertAlmostEqual(float(first), float(second), places=7)
+
+    def test_anchor_ranking_uses_clean_and_rough_only(self):
+        classes = torch.tensor([0, 1, 2])
+        good = _anchor_ranking_loss(
+            torch.tensor([0.10, 0.99, 0.90]), classes, margin=0.35
+        )
+        bad = _anchor_ranking_loss(
+            torch.tensor([0.70, 0.01, 0.40]), classes, margin=0.35
+        )
+        self.assertEqual(float(good), 0.0)
+        self.assertGreater(float(bad), 0.0)
 
     def test_one_epoch_real_only_training_writes_checkpoints(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -48,15 +74,19 @@ class RoughnessCriticTest(unittest.TestCase):
                     base = 0.12 * np.sin(2 * np.pi * frequency * time)
                     base += 0.03 * np.sin(2 * np.pi * frequency * 2 * time)
                     if label == "mixed":
-                        base += 0.007 * np.random.default_rng(segment).standard_normal(
-                            time.size
+                        base += 0.007 * np.random.default_rng(
+                            segment
+                        ).standard_normal(time.size)
+                        base += 0.01 * np.sin(
+                            2 * np.pi * frequency * 0.5 * time
                         )
-                        base += 0.01 * np.sin(2 * np.pi * frequency * 0.5 * time)
                     if label == "rough":
-                        base += 0.018 * np.random.default_rng(segment + 100).standard_normal(
-                            time.size
+                        base += 0.018 * np.random.default_rng(
+                            segment + 100
+                        ).standard_normal(time.size)
+                        base += 0.025 * np.sin(
+                            2 * np.pi * frequency * 0.5 * time
                         )
-                        base += 0.025 * np.sin(2 * np.pi * frequency * 0.5 * time)
                     sf.write(
                         audio_dir / name,
                         base.astype(np.float32),
@@ -100,18 +130,32 @@ class RoughnessCriticTest(unittest.TestCase):
                 seed=12,
                 device="cpu",
             )
-            self.assertEqual(result["training_policy"], "real_audio_only")
+            self.assertEqual(
+                result["training_policy"],
+                "real_audio_only_clean_rough_score_anchors",
+            )
             self.assertTrue(Path(result["best_checkpoint"]).is_file())
             self.assertTrue(Path(result["final_checkpoint"]).is_file())
             self.assertTrue(Path(result["history_path"]).is_file())
             payload = torch.load(
                 result["best_checkpoint"], map_location="cpu", weights_only=False
             )
-            self.assertEqual(payload["format"], "cevc-roughness-critic-v2-real-only")
-            self.assertEqual(payload["training_policy"], "real_audio_only")
+            self.assertEqual(
+                payload["format"],
+                "cevc-roughness-critic-v3-clean-rough-anchors",
+            )
+            self.assertEqual(
+                payload["training_policy"],
+                "real_audio_only_clean_rough_score_anchors",
+            )
+            self.assertEqual(
+                payload["mixed_policy"],
+                "real_class_only_no_fixed_scalar_target",
+            )
             self.assertEqual(payload["epoch"], 1)
             self.assertIn("class_mean_scores", payload["metrics"])
-            self.assertIn("class_ordered", payload["metrics"])
+            self.assertIn("anchor_ordered", payload["metrics"])
+            self.assertIn("clean_to_rough_margin", payload["metrics"])
             self.assertNotIn("pair_monotonic_rate", payload["metrics"])
 
 
