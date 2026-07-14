@@ -101,7 +101,9 @@ jobs:
 
           root = Path("logs/cevc_e2e/cevc2b/adapter_v2")
           report = json.loads((root / "browser_e2e_report.json").read_text())
-          assert report["estimated_optimizer_steps"] >= 20, report
+          assert report["optimizer_steps_completed"] >= 20, report
+          assert report["completed_epochs"] == 30, report
+          assert report["production_prior_latent_path"] is True, report
           for name in (
               "adapter_v2_summary.json",
               "adapter_v2_history.json",
