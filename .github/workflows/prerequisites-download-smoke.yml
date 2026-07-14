@@ -42,7 +42,7 @@ jobs:
 
       - name: Install full Applio requirements exactly like Colab
         run: |
-          "$HOME/.local/bin/uv" pip install --system \
+          "$HOME/.local/bin/uv" pip install --quiet --system \
             -r requirements.txt \
             --extra-index-url https://download.pytorch.org/whl/cu128 \
             --index-strategy unsafe-best-match
@@ -75,15 +75,24 @@ jobs:
           print("Full Colab dependency import smoke passed.")
           PY
 
+      - name: Import CEVC tab module
+        run: |
+          python -u - <<'PY'
+          print("Importing tabs.cevc.cevc...", flush=True)
+          from tabs.cevc.cevc import cevc_tab
+          print("CEVC tab module imported successfully.", flush=True)
+          PY
+
       - name: Build CEVC Gradio tab
         run: |
           python -u - <<'PY'
           import gradio as gr
           from tabs.cevc.cevc import cevc_tab
 
+          print("Constructing CEVC Gradio components...", flush=True)
           with gr.Blocks():
               cevc_tab()
-          print("CEVC Gradio tab constructed successfully.")
+          print("CEVC Gradio tab constructed successfully.", flush=True)
           PY
 
   download-and-load-rmvpe:
@@ -99,9 +108,9 @@ jobs:
 
       - name: Install smoke-test dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install tqdm requests numpy librosa
-          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet tqdm requests numpy librosa
+          python -m pip install --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download predictor and ContentVec prerequisites through official HTTP route
         run: |
