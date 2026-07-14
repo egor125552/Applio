@@ -8,6 +8,9 @@ from pathlib import Path
 
 import gradio as gr
 
+from rvc.train.cevc.ui_exports import publish_files_for_ui
+
+
 ROOT = Path(os.getcwd())
 LOGS = ROOT / "logs"
 
@@ -57,21 +60,26 @@ def _prepare(experiment_path, validation_percent, seed):
             seed=int(seed),
         )
         preview = result["preview"]
+        ui_manifest, ui_source, ui_weak, ui_medium, ui_strong = publish_files_for_ui(
+            [
+                result["manifest_path"],
+                preview["source"],
+                preview["weak"],
+                preview["medium"],
+                preview["strong"],
+            ],
+            prefix="prepare",
+        )
         counts = result["split_counts"]
         status = (
-            "Experiment 2B pseudo-pairs completed. "
+            "Experiment 2B pseudo-pairs completed and validated. "
             f"Existing slices: {result['slice_count']}; clean pseudo-pairs: "
             f"{result['pseudo_pair_count']}. Split counts: {counts}. "
-            "No new recordings were used. Next stage: train Roughness Critic."
+            f"Persistent dataset: {result['dataset_root']}. "
+            "UI previews were copied to the system temporary directory so Gradio "
+            "does not attempt to serve Google Drive paths directly."
         )
-        return (
-            status,
-            result["manifest_path"],
-            preview["source"],
-            preview["weak"],
-            preview["medium"],
-            preview["strong"],
-        )
+        return status, ui_manifest, ui_source, ui_weak, ui_medium, ui_strong
     except Exception as error:
         traceback.print_exc()
         return f"CEVC 2B preparation failed: {error}", None, None, None, None, None
@@ -100,6 +108,10 @@ def _train_critic(
             hidden_channels=int(hidden_channels),
             seed=int(seed),
         )
+        ui_checkpoint, ui_history = publish_files_for_ui(
+            [result["best_checkpoint"], result["history_path"]],
+            prefix="critic",
+        )
         metrics = result["last_metrics"]
         status = (
             "Roughness Critic training completed. "
@@ -108,9 +120,9 @@ def _train_critic(
             f"pair MAE={metrics['pair_score_mae']:.4f}; "
             f"monotonic rate={metrics['pair_monotonic_rate']:.3f}; "
             f"class accuracy={metrics['class_accuracy']:.3f}. "
-            "The best checkpoint is ready for Adapter v2 supervision."
+            f"Persistent checkpoint: {result['best_checkpoint']}."
         )
-        return status, result["best_checkpoint"], result["history_path"]
+        return status, ui_checkpoint, ui_history
     except Exception as error:
         traceback.print_exc()
         return f"Roughness Critic training failed: {error}", None, None
@@ -123,8 +135,9 @@ def cevc2b_lab_tab():
     gr.Markdown(
         "## CEVC 2B Lab — reuse the existing recordings\n"
         "The workflow uses only the existing clean, mixed and rough recordings. "
-        "Run the stages from top to bottom. Generated files are stored inside the "
-        "selected experiment folder on Google Drive."
+        "Run the stages from top to bottom. Persistent generated files are stored "
+        "inside the selected experiment folder on Google Drive; UI copies are "
+        "served from a temporary local directory."
     )
     with gr.Row():
         experiment = gr.Dropdown(
@@ -149,11 +162,12 @@ def cevc2b_lab_tab():
         seed = gr.Number(value=20260714, precision=0, label="Deterministic seed")
         gr.Markdown(
             "Generated target strengths: **0.25, 0.55 and 0.85**. "
-            "All variants preserve sample count and approximately preserve RMS. "
-            "Existing output under `cevc2b/pseudo_pairs` is replaced."
+            "All levels use the same deterministic perturbation pattern per phrase; "
+            "only the strength changes. Sample count and RMS are validated before "
+            "the manifest is accepted. Existing `cevc2b/pseudo_pairs` is replaced."
         )
 
-    prepare_button = gr.Button("Prepare Experiment 2B pseudo-pairs")
+    prepare_button = gr.Button("Prepare and validate Experiment 2B pseudo-pairs")
     prepare_status = gr.Textbox(label="Dataset preparation status")
     manifest = gr.File(label="Experiment 2B manifest (.json)")
     gr.Markdown("#### Validation preview")
@@ -175,11 +189,19 @@ def cevc2b_lab_tab():
         "Pseudo-pairs only teach ordered control values for the same phrase."
     )
     with gr.Accordion("Critic training settings", open=False):
-        critic_epochs = gr.Slider(5, 100, value=30, step=1, label="Critic epochs")
-        critic_batch = gr.Slider(4, 32, value=12, step=1, label="Real-item batch size")
+        critic_epochs = gr.Slider(5, 150, value=80, step=1, label="Critic epochs")
+        critic_batch = gr.Slider(4, 32, value=32, step=1, label="Real-item batch size")
         critic_lr = gr.Number(value=0.0003, label="Critic learning rate")
-        critic_crop = gr.Slider(1.0, 3.0, value=2.0, step=0.25, label="Training crop (seconds)")
-        critic_hidden = gr.Radio([32, 64, 96], value=64, label="Critic hidden channels")
+        critic_crop = gr.Slider(
+            1.0,
+            3.0,
+            value=2.0,
+            step=0.25,
+            label="Training crop (seconds)",
+        )
+        critic_hidden = gr.Radio(
+            [32, 64, 96], value=64, label="Critic hidden channels"
+        )
 
     critic_button = gr.Button("Train Roughness Critic")
     critic_status = gr.Textbox(label="Roughness Critic status")
