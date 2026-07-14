@@ -5,10 +5,12 @@ on:
     branches:
       - agent/compact-expressive-vc-architecture
     paths:
+      - "requirements.txt"
       - "rvc/lib/tools/prerequisites_download.py"
       - ".github/workflows/prerequisites-download-smoke.yml"
   pull_request:
     paths:
+      - "requirements.txt"
       - "rvc/lib/tools/prerequisites_download.py"
       - ".github/workflows/prerequisites-download-smoke.yml"
   workflow_dispatch:
@@ -17,6 +19,52 @@ permissions:
   contents: read
 
 jobs:
+  full-colab-dependency-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install full Applio requirements exactly like Colab
+        run: |
+          "$HOME/.local/bin/uv" pip install --system \
+            -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cu128 \
+            --index-strategy unsafe-best-match
+
+      - name: Verify key dependency imports
+        run: |
+          python -u - <<'PY'
+          import gradio
+          import librosa
+          import numpy
+          import scipy
+          import soundfile
+          import torch
+          import torchaudio
+          import torchcrepe
+          import torchfcpe
+          import torchvision
+          import transformers
+
+          print("torch:", torch.__version__)
+          print("torchaudio:", torchaudio.__version__)
+          print("torchvision:", torchvision.__version__)
+          print("numpy:", numpy.__version__)
+          print("scipy:", scipy.__version__)
+          print("librosa:", librosa.__version__)
+          print("gradio:", gradio.__version__)
+          print("transformers:", transformers.__version__)
+          print("Full Colab dependency import smoke passed.")
+          PY
+
   download-and-load-rmvpe:
     runs-on: ubuntu-latest
     timeout-minutes: 20
