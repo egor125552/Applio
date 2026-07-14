@@ -11,6 +11,7 @@ import torch
 from rvc.train.cevc.adapter_v2_batch_policy import (
     AUTO_BATCH_CANDIDATES,
     choose_largest_fitting_batch,
+    is_cuda_oom,
 )
 from rvc.train.cevc.adapter_v2_objective import (
     adapter_v2_losses,
@@ -74,11 +75,13 @@ def probe_adapter_v2_batch_size(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         result["report_path"] = str(report_path)
+        _console("Auto batch: CUDA не найдена, для CPU выбран batch 4.")
         return result
 
+    candidate_text = ", ".join(str(int(value)) for value in candidates)
     _console(
-        "Проверяю доступную видеопамять настоящим forward/backward. "
-        "Порядок попыток: 32, 24, 16, 12, 8, 6, 4, 2, 1."
+        "Auto batch включён. Проверяю доступную видеопамять настоящим "
+        f"forward/backward. Порядок попыток: {candidate_text}."
     )
     manifest_path, manifest = _load_experiment2b_manifest(experiment)
     critic, critic_path, critic_payload, _critic_gate = _load_accepted_critic(
@@ -107,6 +110,7 @@ def probe_adapter_v2_batch_size(
         z = pitchf = expressive = g = baseline = None
         low_wave = high_wave = low_residual = high_residual = None
         low_16k = high_16k = low_score = high_score = losses = total = None
+        _console(f"Auto batch: пробую batch {int(candidate)}.")
         try:
             _clear_cuda(adapter)
             torch.manual_seed(int(seed))
@@ -163,7 +167,7 @@ def probe_adapter_v2_batch_size(
             torch.nn.utils.clip_grad_norm_(adapter.parameters(), 5.0)
             peak_bytes = int(torch.cuda.max_memory_allocated(device))
             free_after, _ = torch.cuda.mem_get_info(device)
-            return {
+            details = {
                 "actual_batch_size": actual_batch,
                 "train_slices": int(train_count),
                 "validation_slices": int(validation_count),
@@ -172,6 +176,18 @@ def probe_adapter_v2_batch_size(
                 "free_after_backward_gib": int(free_after) / 1024**3,
                 "total_gpu_memory_gib": int(total_memory) / 1024**3,
             }
+            _console(
+                f"Auto batch: batch {int(candidate)} прошёл. "
+                f"Пиковая выделенная память: {details['peak_allocated_gib']:.2f} ГБ."
+            )
+            return details
+        except Exception as error:
+            if is_cuda_oom(error):
+                _console(
+                    f"Auto batch: batch {int(candidate)} не влез в видеопамять; "
+                    "перехожу к следующему меньшему значению."
+                )
+            raise
         finally:
             adapter.zero_grad(set_to_none=True)
             del (
@@ -218,7 +234,8 @@ def probe_adapter_v2_batch_size(
         )
         result["report_path"] = str(report_path)
         _console(
-            f"Проверка памяти завершена. Максимальный прошедший batch: {selected}."
+            f"Auto batch завершён. Для обучения выбран batch {int(selected)}. "
+            f"Отчёт: {report_path}"
         )
         return result
     finally:
