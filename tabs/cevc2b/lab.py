@@ -155,7 +155,83 @@ def _train_critic(
         return status, ui_checkpoint, ui_summary, ui_history
     except Exception as error:
         traceback.print_exc()
-        return f"Обучение Roughness Critic завершилось ошибкой: {error}", None, None, None
+        return (
+            f"Обучение Roughness Critic завершилось ошибкой: {error}",
+            None,
+            None,
+            None,
+        )
+
+
+def _check_adapter_v2(experiment_path):
+    try:
+        from rvc.train.cevc.train_adapter_v2 import (
+            validate_adapter_v2_prerequisites,
+        )
+
+        if not experiment_path:
+            raise FileNotFoundError("Select a CEVC experiment folder")
+        result = validate_adapter_v2_prerequisites(_absolute(experiment_path))
+        return (
+            "Проверка пройдена. Critic принят, базовый checkpoint найден, clean-"
+            "срезы для обучения и контроля присутствуют. Adapter v2 можно "
+            "запускать. Повторно обучать critic не требуется."
+        )
+    except Exception as error:
+        traceback.print_exc()
+        return f"Adapter v2 пока нельзя запускать: {error}"
+
+
+def _train_adapter_v2(
+    experiment_path,
+    epochs,
+    batch_size,
+    learning_rate,
+    gpu,
+    checkpointing,
+    seed,
+):
+    try:
+        from rvc.train.cevc.train_adapter_v2 import train_adapter_v2
+
+        if not experiment_path:
+            raise FileNotFoundError("Select a CEVC experiment folder")
+        result = train_adapter_v2(
+            _absolute(experiment_path),
+            epochs=int(epochs),
+            batch_size=int(batch_size),
+            learning_rate=float(learning_rate),
+            gpu=str(gpu),
+            checkpointing=bool(checkpointing),
+            seed=int(seed),
+        )
+        ui_adapter, ui_summary, ui_history = publish_files_for_ui(
+            [
+                result["export_adapter"],
+                result["summary_path"],
+                result["history_path"],
+            ],
+            prefix="adapter_v2",
+        )
+        if result["gate"]["passed"]:
+            status = (
+                "Обучение завершено. Результат: ADAPTER V2 ГОТОВ К A/B. "
+                "Автоматические проверки подтвердили правильное направление "
+                "управления, сохранение громкости и точный нулевой режим. "
+                f"Лучший вариант найден на эпохе {result['best_epoch']}. "
+                "Следующий шаг: открыть CEVC A/B и прослушать 0, 0.5 и 1 из "
+                "одного latent."
+            )
+        else:
+            status = (
+                "Обучение завершено, но Adapter v2 пока не прошёл автоматический "
+                "gate. Не запускай финальный A/B как принятый результат. Короткий "
+                "JSON-отчёт показывает, какая защита не сработала."
+            )
+        return status, ui_adapter, ui_summary, ui_history
+    except Exception as error:
+        traceback.print_exc()
+        return f"Обучение Adapter v2 завершилось ошибкой: {error}", None, None, None
 
 
 def cevc2b_lab_tab():
@@ -274,9 +350,62 @@ def cevc2b_lab_tab():
         outputs=[critic_status, critic_checkpoint, critic_summary, critic_history],
     )
 
+    gr.Markdown("### Этап 3 — обучить Adapter v2")
     gr.Markdown(
-        "### Этап 3 — Adapter v2\n"
-        "Этот этап ещё не реализован в интерфейсе. Он будет разблокирован только "
-        "для принятого critic и будет обучать адаптер с сохранением слов, высоты "
-        "голоса, громкости и точного нулевого режима."
+        "Adapter v2 использует prior latent как на настоящем инференсе. Низкий и "
+        "высокий уровни генерируются из одного latent. Базовая RVC-модель и critic "
+        "заморожены. Loss не позволяет выиграть простым падением громкости, "
+        "затемнением или большим разрушением спектра."
+    )
+    adapter_check_button = gr.Button("Проверить готовность к Adapter v2")
+    adapter_check_status = gr.Textbox(label="Готовность к обучению", lines=3)
+    adapter_check_button.click(
+        _check_adapter_v2,
+        inputs=[experiment],
+        outputs=[adapter_check_status],
+        show_progress=False,
+    )
+
+    with gr.Accordion("Дополнительные настройки Adapter v2", open=False):
+        adapter_epochs = gr.Slider(
+            5, 80, value=30, step=1, label="Количество эпох Adapter v2"
+        )
+        adapter_batch = gr.Radio(
+            [1, 2, 4, 6, 8], value=4, label="Размер батча полной RVC-модели"
+        )
+        adapter_lr = gr.Number(value=0.0001, label="Скорость обучения Adapter v2")
+        adapter_gpu = gr.Textbox(value="0", label="Номер GPU")
+        adapter_checkpointing = gr.Checkbox(
+            value=False,
+            label="Экономить видеопамять ценой более медленного обучения",
+        )
+        gr.Markdown(
+            "Для Tesla T4 оставь 30 эпох, батч 4 и скорость 0.0001. Батч 32 здесь "
+            "не подходит: теперь внутри шага работают полная RVC-модель, два "
+            "декодирования и critic."
+        )
+
+    adapter_button = gr.Button("Обучить Adapter v2")
+    adapter_status = gr.Textbox(label="Итог Adapter v2 и следующий шаг", lines=6)
+    with gr.Row():
+        adapter_checkpoint = gr.File(label="Рабочий Adapter v2 для CEVC A/B")
+        adapter_summary = gr.File(label="Короткий отчёт для передачи мне (.json)")
+        adapter_history = gr.File(label="Полная техническая история (.json)")
+    adapter_button.click(
+        _train_adapter_v2,
+        inputs=[
+            experiment,
+            adapter_epochs,
+            adapter_batch,
+            adapter_lr,
+            adapter_gpu,
+            adapter_checkpointing,
+            seed,
+        ],
+        outputs=[
+            adapter_status,
+            adapter_checkpoint,
+            adapter_summary,
+            adapter_history,
+        ],
     )
