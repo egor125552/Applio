@@ -50,7 +50,10 @@ def train_adapter_v2_auto(
         "requested": "auto" if requested <= 0 else requested,
         "selected": int(selected),
         "probe_report": result["batch_probe_path"],
-        "automatic_gpu_probe": probe is not None,
+        "automatic_gpu_probe": bool(
+            probe is not None and probe.get("automatic_gpu_probe", False)
+        ),
+        "selection_device": probe.get("device") if probe else result.get("device"),
     }
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
