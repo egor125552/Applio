@@ -1,0 +1,262 @@
+"""Dedicated CEVC A/B conversion UI."""
+
+from __future__ import annotations
+
+import datetime
+import os
+import re
+import traceback
+from pathlib import Path
+
+import gradio as gr
+
+from assets.i18n.i18n import I18nAuto
+from rvc.infer.cevc import prepare_cevc_converter, seed_cevc_inference
+from rvc.infer.cevc_conditioning import find_cevc_adapter_for_model
+
+
+i18n = I18nAuto()
+ROOT = Path(os.getcwd())
+LOGS = ROOT / "logs"
+OUTPUTS = ROOT / "assets" / "audios" / "cevc_ab"
+SUPPORTED_AUDIO = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
+
+
+def _voice_models() -> list[str]:
+    models = []
+    if not LOGS.exists():
+        return models
+    for path in LOGS.rglob("*.pth"):
+        name = path.name
+        if name.startswith(("G_", "D_")) or name.endswith(".cevc.pth"):
+            continue
+        if name.startswith("roughness_adapter_"):
+            continue
+        models.append(os.path.relpath(path, ROOT))
+    return sorted(models)
+
+
+def _adapters() -> list[str]:
+    if not LOGS.exists():
+        return []
+    return sorted(os.path.relpath(path, ROOT) for path in LOGS.rglob("*.cevc.pth"))
+
+
+def _indexes() -> list[str]:
+    if not LOGS.exists():
+        return []
+    return sorted(
+        os.path.relpath(path, ROOT)
+        for path in LOGS.rglob("*.index")
+        if "trained" not in path.name
+    )
+
+
+def _absolute(path: str) -> str:
+    value = str(path or "").strip().strip('"')
+    if not value:
+        return ""
+    candidate = Path(value).expanduser()
+    return str(candidate if candidate.is_absolute() else ROOT / candidate)
+
+
+def _match_index(model_path: str) -> str:
+    model = Path(_absolute(model_path))
+    indexes = [Path(_absolute(path)) for path in _indexes()]
+    same_folder = [path for path in indexes if path.parent == model.parent]
+    if len(same_folder) == 1:
+        return os.path.relpath(same_folder[0], ROOT)
+    prefix = re.sub(r"_\d+e(?:_\d+s)?$", "", model.stem)
+    matches = [path for path in indexes if prefix and prefix in path.stem]
+    return os.path.relpath(matches[0], ROOT) if len(matches) == 1 else ""
+
+
+def _match_adapter(model_path: str) -> str:
+    resolved = find_cevc_adapter_for_model(_absolute(model_path))
+    return os.path.relpath(resolved, ROOT) if resolved else ""
+
+
+def _refresh(model_path: str):
+    models = _voice_models()
+    selected_model = model_path if model_path in models else (models[-1] if models else "")
+    return (
+        gr.update(choices=models, value=selected_model),
+        gr.update(choices=_indexes(), value=_match_index(selected_model)),
+        gr.update(choices=_adapters(), value=_match_adapter(selected_model)),
+    )
+
+
+def _output_paths(input_path: str) -> tuple[str, str, str]:
+    OUTPUTS.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-я._-]+", "_", Path(input_path).stem)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = OUTPUTS / f"{stem}_{stamp}"
+    return (
+        str(base) + "_roughness_0.wav",
+        str(base) + "_roughness_05.wav",
+        str(base) + "_roughness_1.wav",
+    )
+
+
+def _run_ab(
+    terms_accepted,
+    input_audio,
+    model_path,
+    index_path,
+    adapter_path,
+    pitch,
+    f0_method,
+    index_rate,
+    protect,
+    split_audio,
+    sid,
+):
+    if not terms_accepted:
+        return "You must agree to the Terms of Use to proceed.", None, None, None
+    try:
+        input_path = _absolute(input_audio)
+        model = _absolute(model_path)
+        index = _absolute(index_path)
+        adapter = _absolute(adapter_path)
+        if not input_path or not os.path.isfile(input_path):
+            raise FileNotFoundError("Select or record an input audio file")
+        if Path(input_path).suffix.lower() not in SUPPORTED_AUDIO:
+            raise ValueError(f"Unsupported input audio format: {Path(input_path).suffix}")
+        if not model or not os.path.isfile(model):
+            raise FileNotFoundError("Select an exported RVC .pth voice model")
+
+        converter, resolved_adapter, payload = prepare_cevc_converter(
+            model,
+            adapter,
+            sid=int(sid or 0),
+            roughness_strength=0.0,
+        )
+        outputs = _output_paths(input_path)
+        variants = ((0.0, outputs[0]), (0.5, outputs[1]), (1.0, outputs[2]))
+        for strength, output in variants:
+            converter.vc.set_roughness_strength(strength)
+            seed_cevc_inference()
+            converter.convert_audio(
+                audio_input_path=input_path,
+                audio_output_path=output,
+                model_path=model,
+                index_path=index,
+                pitch=int(pitch),
+                f0_method=f0_method,
+                index_rate=float(index_rate),
+                protect=float(protect),
+                split_audio=bool(split_audio),
+                export_format="WAV",
+                sid=int(sid or 0),
+            )
+
+        parameters = sum(
+            parameter.numel() for parameter in converter.net_g.cevc_adapter.parameters()
+        )
+        status = (
+            "CEVC A/B completed. The same deterministic seed was used for all "
+            f"three conversions. Adapter: {resolved_adapter}; "
+            f"epoch={payload.get('epoch')}; parameters={parameters:,}."
+        )
+        return status, outputs[0], outputs[1], outputs[2]
+    except Exception as error:
+        traceback.print_exc()
+        return f"CEVC A/B failed: {error}", None, None, None
+
+
+def cevc_tab():
+    models = _voice_models()
+    default_model = models[-1] if models else ""
+
+    gr.Markdown(
+        "## CEVC Roughness Adapter — deterministic A/B\n"
+        "One click converts the same recording at roughness 0.0, 0.5 and 1.0. "
+        "Roughness 0.0 is the baseline identity path."
+    )
+    input_audio = gr.Audio(
+        label=i18n("Upload or record test audio"),
+        type="filepath",
+        editable=False,
+    )
+    with gr.Row():
+        model_path = gr.Dropdown(
+            label=i18n("Voice Model"),
+            choices=models,
+            value=default_model,
+            interactive=True,
+            allow_custom_value=True,
+        )
+        index_path = gr.Dropdown(
+            label=i18n("Index File"),
+            choices=_indexes(),
+            value=_match_index(default_model),
+            interactive=True,
+            allow_custom_value=True,
+        )
+        adapter_path = gr.Dropdown(
+            label="CEVC Adapter",
+            choices=_adapters(),
+            value=_match_adapter(default_model),
+            interactive=True,
+            allow_custom_value=True,
+        )
+
+    refresh = gr.Button(i18n("Refresh"))
+    refresh.click(
+        _refresh,
+        inputs=[model_path],
+        outputs=[model_path, index_path, adapter_path],
+        show_progress=False,
+    )
+    model_path.change(
+        lambda model: (_match_index(model), _match_adapter(model)),
+        inputs=[model_path],
+        outputs=[index_path, adapter_path],
+        show_progress=False,
+    )
+
+    with gr.Accordion(i18n("Conversion settings"), open=False):
+        pitch = gr.Slider(-24, 24, value=0, step=1, label=i18n("Pitch"))
+        f0_method = gr.Radio(
+            ["rmvpe", "fcpe", "crepe", "crepe-tiny"],
+            value="rmvpe",
+            label=i18n("Pitch extraction algorithm"),
+        )
+        index_rate = gr.Slider(
+            0, 1, value=0.75, label=i18n("Search Feature Ratio")
+        )
+        protect = gr.Slider(
+            0, 0.5, value=0.5, label=i18n("Protect Voiceless Consonants")
+        )
+        split_audio = gr.Checkbox(value=False, label=i18n("Split Audio"))
+        sid = gr.Number(value=0, precision=0, label=i18n("Speaker ID"))
+
+    terms = gr.Checkbox(
+        label=i18n("I agree to the terms of use"),
+        value=False,
+        interactive=True,
+    )
+    run_button = gr.Button("Run CEVC A/B: 0.0 / 0.5 / 1.0")
+    status = gr.Textbox(label=i18n("Output Information"))
+    with gr.Row():
+        output_zero = gr.Audio(label="Roughness 0.0 — baseline")
+        output_half = gr.Audio(label="Roughness 0.5")
+        output_full = gr.Audio(label="Roughness 1.0")
+
+    run_button.click(
+        _run_ab,
+        inputs=[
+            terms,
+            input_audio,
+            model_path,
+            index_path,
+            adapter_path,
+            pitch,
+            f0_method,
+            index_rate,
+            protect,
+            split_audio,
+            sid,
+        ],
+        outputs=[status, output_zero, output_half, output_full],
+    )
