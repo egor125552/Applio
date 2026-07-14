@@ -58,17 +58,34 @@ def _is_valid_existing_file(path: str) -> bool:
 
 
 def get_file_size_if_missing(file_list):
-    """Calculate the total download size for missing or obviously invalid files."""
+    """Best-effort size lookup that never blocks the real download.
+
+    Hugging Face may redirect HEAD requests to Xet CDN URLs that reject HEAD
+    with HTTP 403 even though a normal streaming GET works. A failed size probe
+    must therefore not abort prerequisite installation.
+    """
     total_size = 0
     for remote_folder, files in file_list:
         local_folder = folder_mapping_list.get(remote_folder, "")
         for file in files:
             destination_path = os.path.join(local_folder, file)
-            if not _is_valid_existing_file(destination_path):
-                url = f"{url_base}/{remote_folder}{file}"
+            if _is_valid_existing_file(destination_path):
+                continue
+            url = f"{url_base}/{remote_folder}{file}"
+            try:
                 response = requests.head(url, allow_redirects=True, timeout=30)
-                response.raise_for_status()
-                total_size += int(response.headers.get("content-length", 0))
+                if response.ok:
+                    total_size += int(response.headers.get("content-length", 0))
+                else:
+                    print(
+                        f"Size probe skipped for {file}: HTTP {response.status_code}; "
+                        "the file will be downloaded with GET."
+                    )
+            except requests.RequestException as error:
+                print(
+                    f"Size probe skipped for {file}: {error}; "
+                    "the file will be downloaded with GET."
+                )
     return total_size
 
 
