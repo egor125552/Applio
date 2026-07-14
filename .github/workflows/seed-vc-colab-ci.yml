@@ -1,0 +1,70 @@
+name: Seed-VC Colab CI
+
+on:
+  push:
+    branches:
+      - main
+      - agent/seed-vc-colab
+    paths:
+      - "seed_vc_colab/**"
+      - ".github/workflows/seed-vc-colab-ci.yml"
+  pull_request:
+    paths:
+      - "seed_vc_colab/**"
+      - ".github/workflows/seed-vc-colab-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seed-vc-colab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notebook-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install -q pytest
+      - run: pytest -q seed_vc_colab/tests/test_notebook_contract.py seed_vc_colab/tests/test_script_contract.py
+
+  dependency-and-server-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: seed_vc_colab/requirements-colab.txt
+
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install -q --upgrade pip setuptools wheel
+          python -m pip install -q \
+            torch==2.4.0 torchaudio==2.4.0 torchvision==0.19.0 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install Seed-VC runtime dependencies
+        run: python -m pip install -q -r seed_vc_colab/requirements-colab.txt
+
+      - name: Checkout pinned official Seed-VC
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/Plachtaa/seed-vc.git "$RUNNER_TEMP/seed-vc"
+          git -C "$RUNNER_TEMP/seed-vc" fetch --depth 1 origin 51383efd921027683c89e5348211d93ff12ac2a8
+          git -C "$RUNNER_TEMP/seed-vc" checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
+          test "$(git -C "$RUNNER_TEMP/seed-vc" rev-parse HEAD)" = "51383efd921027683c89e5348211d93ff12ac2a8"
+
+      - name: Import model code and start Gradio server
+        env:
+          SEED_VC_DIR: ${{ runner.temp }}/seed-vc
+        run: python seed_vc_colab/tests/smoke_imports.py
+
+      - name: Verify remote model files
+        run: python seed_vc_colab/tests/check_remote_models.py
