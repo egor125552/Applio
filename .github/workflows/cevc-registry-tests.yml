@@ -11,6 +11,8 @@ on:
       - "tabs/train/train.py"
       - "tabs/cevc/**"
       - "rvc/infer/cevc.py"
+      - "rvc/infer/cevc_ab.py"
+      - "rvc/infer/cevc_ab_runtime.py"
       - "rvc/infer/cevc_conditioning.py"
       - "rvc/lib/algorithm/generators/**"
       - "rvc/lib/algorithm/cevc/**"
@@ -58,6 +60,8 @@ jobs:
             tabs/train/train.py \
             tabs/cevc/cevc.py \
             rvc/infer/cevc.py \
+            rvc/infer/cevc_ab.py \
+            rvc/infer/cevc_ab_runtime.py \
             rvc/infer/cevc_conditioning.py \
             rvc/lib/algorithm/generators/registry.py \
             rvc/lib/algorithm/cevc/roughness_adapter.py \
