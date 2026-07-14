@@ -19,7 +19,7 @@ def test_notebook_is_valid_and_clean() -> None:
     assert not any(token in combined for token in forbidden)
     assert "install_seed_vc.py" in combined
     assert "launch_seed_vc.py" in combined
-    assert "raw.githubusercontent.com/egor125552/Applio/main" in combined
+    assert "raw.githubusercontent.com/egor125552/Applio/agent/seed-vc-colab" in combined
 
     for cell in code_cells:
         assert cell["execution_count"] is None
