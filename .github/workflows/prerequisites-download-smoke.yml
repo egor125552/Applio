@@ -8,8 +8,10 @@ on:
       - "app.py"
       - "requirements.txt"
       - "tabs/cevc/**"
+      - "tabs/cevc2b/**"
       - "rvc/infer/cevc.py"
       - "rvc/infer/cevc_conditioning.py"
+      - "rvc/train/cevc/**"
       - "rvc/lib/tools/prerequisites_download.py"
       - ".github/workflows/prerequisites-download-smoke.yml"
   pull_request:
@@ -17,8 +19,10 @@ on:
       - "app.py"
       - "requirements.txt"
       - "tabs/cevc/**"
+      - "tabs/cevc2b/**"
       - "rvc/infer/cevc.py"
       - "rvc/infer/cevc_conditioning.py"
+      - "rvc/train/cevc/**"
       - "rvc/lib/tools/prerequisites_download.py"
       - ".github/workflows/prerequisites-download-smoke.yml"
   workflow_dispatch:
@@ -78,12 +82,13 @@ jobs:
       - name: Prepare application config
         run: cp -n assets/config_template.json assets/config.json
 
-      - name: Import CEVC tab module
+      - name: Import CEVC tab modules
         run: |
           python -u - <<'PY'
-          print("Importing tabs.cevc.cevc...", flush=True)
+          print("Importing CEVC tabs...", flush=True)
           from tabs.cevc.cevc import cevc_tab
-          print("CEVC tab module imported successfully.", flush=True)
+          from tabs.cevc2b.lab import cevc2b_lab_tab
+          print("CEVC tab modules imported successfully.", flush=True)
           PY
 
       - name: Discover CEVC files through a Drive-style symlink
@@ -113,16 +118,107 @@ jobs:
           print("CEVC discovered model, index and adapter through a symlink.")
           PY
 
-      - name: Build CEVC Gradio tab
+      - name: Build CEVC Gradio tabs
         run: |
           python -u - <<'PY'
           import gradio as gr
           from tabs.cevc.cevc import cevc_tab
+          from tabs.cevc2b.lab import cevc2b_lab_tab
 
           print("Constructing CEVC Gradio components...", flush=True)
           with gr.Blocks():
               cevc_tab()
-          print("CEVC Gradio tab constructed successfully.", flush=True)
+              cevc2b_lab_tab()
+          print("CEVC Gradio tabs constructed successfully.", flush=True)
+          PY
+
+      - name: Run CEVC 2B preparation through Gradio postprocess
+        run: |
+          python -u - <<'PY'
+          import asyncio
+          import json
+          import shutil
+          import tempfile
+          from pathlib import Path
+
+          import gradio as gr
+          import numpy as np
+          import soundfile as sf
+          from gradio import processing_utils
+          from gradio.context import LocalContext
+
+          from tabs.cevc2b.lab import LOGS, _prepare
+
+          external = Path.home() / "cevc2b_drive_smoke"
+          shutil.rmtree(external, ignore_errors=True)
+          audio_dir = external / "sliced_audios_16k"
+          audio_dir.mkdir(parents=True)
+          records = []
+          sample_rate = 16000
+          time = np.arange(3200, dtype=np.float32) / sample_rate
+          for label, source_index in (("clean", 0), ("mixed", 1), ("rough", 2)):
+              for segment in range(4):
+                  name = f"0_{source_index}_{segment}.wav"
+                  audio = (
+                      0.13 * np.sin(2 * np.pi * (160 + source_index * 25) * time)
+                      + 0.02 * np.sin(2 * np.pi * (330 + segment) * time)
+                  ).astype(np.float32)
+                  sf.write(audio_dir / name, audio, sample_rate, subtype="FLOAT")
+                  records.append(
+                      {
+                          "file": name,
+                          "source_index": source_index,
+                          "source_filename": f"{label}.wav",
+                          "label_hint": label,
+                          "frames": 20,
+                      }
+                  )
+          (external / "cevc_expressive_manifest.json").write_text(
+              json.dumps({"files": records}), encoding="utf-8"
+          )
+
+          LOGS.mkdir(parents=True, exist_ok=True)
+          link = LOGS / "cevc2b_drive_smoke"
+          if link.exists() or link.is_symlink():
+              link.unlink()
+          link.symlink_to(external, target_is_directory=True)
+          try:
+              result = _prepare("logs/cevc2b_drive_smoke", 25, 1234)
+              status, manifest, source, weak, medium, strong = result
+              assert "completed and validated" in status, status
+              assert (external / "cevc2b" / "experiment2b_manifest.json").is_file()
+              returned = [manifest, source, weak, medium, strong]
+              for path in returned:
+                  resolved = Path(path).resolve()
+                  assert resolved.is_file(), resolved
+                  assert resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+                  assert not resolved.is_relative_to(external.resolve())
+
+              with gr.Blocks() as blocks:
+                  file_output = gr.File()
+                  audio_outputs = [gr.Audio() for _ in range(4)]
+              blocks.has_launched = True
+              token = LocalContext.blocks.set(blocks)
+
+              async def verify_gradio_outputs():
+                  components = [file_output, *audio_outputs]
+                  for component, value in zip(components, returned):
+                      payload = component.postprocess(value)
+                      cached = await processing_utils.async_move_files_to_cache(
+                          payload, component, postprocess=True
+                      )
+                      assert cached["path"]
+
+              try:
+                  asyncio.run(verify_gradio_outputs())
+              finally:
+                  LocalContext.blocks.reset(token)
+          finally:
+              if link.exists() or link.is_symlink():
+                  link.unlink()
+              shutil.rmtree(external, ignore_errors=True)
+
+          print("CEVC 2B button output passed real Gradio file postprocessing.")
           PY
 
   download-and-load-rmvpe:
