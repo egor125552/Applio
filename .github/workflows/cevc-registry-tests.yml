@@ -30,6 +30,7 @@ on:
       - "tests/test_cevc_training_integration.py"
       - "tests/test_cevc_inference.py"
       - "tests/test_cevc_experiment2b.py"
+      - "tests/test_cevc_real_only_cleanup.py"
       - "assets/Applio_CEVC_Registry.ipynb"
       - "assets/Applio_CEVC_Adapter.ipynb"
       - ".github/workflows/cevc-registry-tests.yml"
@@ -89,7 +90,8 @@ jobs:
             tests/test_expressive_features.py \
             tests/test_cevc_training_integration.py \
             tests/test_cevc_inference.py \
-            tests/test_cevc_experiment2b.py
+            tests/test_cevc_experiment2b.py \
+            tests/test_cevc_real_only_cleanup.py
       - name: Run generator registry tests
         run: python -m unittest tests.test_generator_registry -v
       - name: Run Roughness Adapter tests
@@ -103,7 +105,9 @@ jobs:
       - name: Run CEVC inference helper tests
         run: python -m unittest tests.test_cevc_inference -v
       - name: Run CEVC Experiment 2B tests
-        run: python -m unittest tests.test_cevc_experiment2b -v
+        run: |
+          python -m unittest tests.test_cevc_experiment2b -v
+          python -m unittest tests.test_cevc_real_only_cleanup -v
       - name: Validate Colab notebooks
         run: |
           python -m unittest tests.test_cevc_notebook -v
