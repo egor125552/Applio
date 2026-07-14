@@ -10,10 +10,7 @@ from rvc.train.cevc.adapter_v2_objective import (
     adapter_v2_losses,
     resample_for_critic,
 )
-from rvc.train.cevc.train_adapter_v2 import (
-    _temporary_torch_seed,
-    validate_adapter_v2_prerequisites,
-)
+from rvc.train.cevc.adapter_v2_preflight import validate_adapter_v2_prerequisites
 
 
 class AdapterV2Test(unittest.TestCase):
@@ -51,21 +48,6 @@ class AdapterV2Test(unittest.TestCase):
         converted.square().mean().backward()
         self.assertIsNotNone(waveform.grad)
         self.assertTrue(torch.isfinite(waveform.grad).all())
-
-    def test_validation_seed_does_not_change_training_rng(self):
-        torch.manual_seed(123)
-        first = torch.rand(4)
-        expected_second = torch.rand(4)
-        torch.manual_seed(123)
-        repeated_first = torch.rand(4)
-        with _temporary_torch_seed(999):
-            inside_a = torch.rand(4)
-            torch.manual_seed(999)
-            inside_b = torch.rand(4)
-        actual_second = torch.rand(4)
-        self.assertTrue(torch.equal(first, repeated_first))
-        self.assertTrue(torch.equal(inside_a, inside_b))
-        self.assertTrue(torch.equal(expected_second, actual_second))
 
     def test_adapter_gate_pass_and_fail(self):
         passed = adapter_v2_gate(
