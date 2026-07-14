@@ -74,6 +74,7 @@ jobs:
             rvc/lib/algorithm/synthesizers.py \
             rvc/train/cevc/data.py \
             rvc/train/cevc/experiment2b.py \
+            rvc/train/cevc/ui_exports.py \
             rvc/train/cevc/train_critic.py \
             rvc/train/cevc/train_adapter.py \
             rvc/train/extract/expressive.py \
