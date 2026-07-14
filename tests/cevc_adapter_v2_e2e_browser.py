@@ -24,20 +24,16 @@ MINIMUM_OPTIMIZER_STEPS = 20
 
 
 def _set_gradio_value(page, label: str, value) -> None:
-    """Change a visible Gradio range/number input through browser events."""
+    """Change a visible Gradio numeric control through its accessible spinbutton."""
 
-    control = page.get_by_label(label, exact=True)
-    expect(control).to_be_visible(timeout=30_000)
-    control.evaluate(
-        """
-        (element, nextValue) => {
-          element.value = String(nextValue);
-          element.dispatchEvent(new Event('input', { bubbles: true }));
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        """,
-        value,
+    prefixed = page.get_by_role("spinbutton", name=f"number input for {label}")
+    control = prefixed if prefixed.count() else page.get_by_role(
+        "spinbutton", name=label, exact=True
     )
+    expect(control).to_be_visible(timeout=30_000)
+    control.fill(str(value))
+    control.press("Enter")
+    expect(control).to_have_value(str(value), timeout=10_000)
 
 
 def _assert_critic_artifacts() -> dict:
@@ -168,15 +164,15 @@ def main() -> None:
         if clean_train != EXPECTED_CLEAN_TRAIN_SLICES:
             raise AssertionError(f"Unexpected clean training split: {clean_train}")
 
-        # Open the same collapsed settings section a user must open before changing
-        # critic controls. Direct function tests cannot catch this UI requirement.
-        critic_settings = page.get_by_text(
-            "Дополнительные настройки critic", exact=True
-        ).first
+        critic_settings = page.get_by_role(
+            "button", name=re.compile(r"^Дополнительные настройки critic")
+        )
         expect(critic_settings).to_be_visible(timeout=30_000)
         critic_settings.click()
 
-        # Batch 8 gives three real optimizer steps per epoch, for 300 critic steps.
+        # Gradio exposes sliders as a keyboard-accessible spinbutton and range
+        # slider pair. The browser test edits the spinbutton, like a screen-reader
+        # or keyboard user, and verifies the exact value before starting training.
         _set_gradio_value(page, "Количество эпох обучения critic", EXPECTED_CRITIC_EPOCHS)
         _set_gradio_value(page, "Размер батча", EXPECTED_CRITIC_BATCH)
         _set_gradio_value(page, "Скорость обучения", 0.0005)
