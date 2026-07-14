@@ -132,7 +132,7 @@ jobs:
           print("CEVC Gradio tabs constructed successfully.", flush=True)
           PY
 
-      - name: Run CEVC 2B preparation through Gradio postprocess
+      - name: Run real-only CEVC 2B preparation through Gradio postprocess
         run: |
           python -u - <<'PY'
           import asyncio
@@ -152,25 +152,41 @@ jobs:
           external = Path.home() / "cevc2b_drive_smoke"
           shutil.rmtree(external, ignore_errors=True)
           audio_dir = external / "sliced_audios_16k"
+          expressive_dir = external / "expressive"
           audio_dir.mkdir(parents=True)
+          expressive_dir.mkdir(parents=True)
           records = []
           sample_rate = 16000
-          time = np.arange(3200, dtype=np.float32) / sample_rate
+          time = np.arange(6400, dtype=np.float32) / sample_rate
+          feature_centers = {
+              "clean": np.array([0.0, 1.0, 1.2, -0.8, -0.5], dtype=np.float32),
+              "mixed": np.array([0.1, 0.1, 0.0, 0.1, 0.2], dtype=np.float32),
+              "rough": np.array([0.2, -0.8, -1.0, 1.0, 1.0], dtype=np.float32),
+          }
           for label, source_index in (("clean", 0), ("mixed", 1), ("rough", 2)):
               for segment in range(4):
                   name = f"0_{source_index}_{segment}.wav"
+                  frequency = 160 + source_index * 25
                   audio = (
-                      0.13 * np.sin(2 * np.pi * (160 + source_index * 25) * time)
-                      + 0.02 * np.sin(2 * np.pi * (330 + segment) * time)
+                      0.13 * np.sin(2 * np.pi * frequency * time)
+                      + 0.02 * np.sin(2 * np.pi * frequency * 2 * time)
                   ).astype(np.float32)
+                  if label == "mixed":
+                      audio += 0.007 * np.random.default_rng(segment).standard_normal(time.size)
+                      audio += 0.01 * np.sin(2 * np.pi * frequency * 0.5 * time)
+                  if label == "rough":
+                      audio += 0.018 * np.random.default_rng(segment + 100).standard_normal(time.size)
+                      audio += 0.025 * np.sin(2 * np.pi * frequency * 0.5 * time)
                   sf.write(audio_dir / name, audio, sample_rate, subtype="FLOAT")
+                  features = np.tile(feature_centers[label], (40, 1))
+                  np.save(expressive_dir / f"{name}.npy", features, allow_pickle=False)
                   records.append(
                       {
                           "file": name,
                           "source_index": source_index,
                           "source_filename": f"{label}.wav",
                           "label_hint": label,
-                          "frames": 20,
+                          "frames": 40,
                       }
                   )
           (external / "cevc_expressive_manifest.json").write_text(
@@ -184,10 +200,12 @@ jobs:
           link.symlink_to(external, target_is_directory=True)
           try:
               result = _prepare("logs/cevc2b_drive_smoke", 25, 1234)
-              status, manifest, source, weak, medium, strong = result
-              assert "completed and validated" in status, status
+              status, manifest, profile, clean, spectral, mixed, rough = result
+              assert "real-only dataset completed and validated" in status, status
+              assert "Synthetic training targets: disabled" in status, status
               assert (external / "cevc2b" / "experiment2b_manifest.json").is_file()
-              returned = [manifest, source, weak, medium, strong]
+              assert (external / "cevc2b" / "real_profile" / "real_roughness_profile.npz").is_file()
+              returned = [manifest, profile, clean, spectral, mixed, rough]
               for path in returned:
                   resolved = Path(path).resolve()
                   assert resolved.is_file(), resolved
@@ -195,13 +213,13 @@ jobs:
                   assert not resolved.is_relative_to(external.resolve())
 
               with gr.Blocks() as blocks:
-                  file_output = gr.File()
+                  file_outputs = [gr.File(), gr.File()]
                   audio_outputs = [gr.Audio() for _ in range(4)]
               blocks.has_launched = True
               token = LocalContext.blocks.set(blocks)
 
               async def verify_gradio_outputs():
-                  components = [file_output, *audio_outputs]
+                  components = [*file_outputs, *audio_outputs]
                   for component, value in zip(components, returned):
                       payload = component.postprocess(value)
                       cached = await processing_utils.async_move_files_to_cache(
@@ -218,7 +236,7 @@ jobs:
                   link.unlink()
               shutil.rmtree(external, ignore_errors=True)
 
-          print("CEVC 2B button output passed real Gradio file postprocessing.")
+          print("Real-only CEVC 2B button passed actual Gradio file postprocessing.")
           PY
 
   download-and-load-rmvpe:
