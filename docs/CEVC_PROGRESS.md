@@ -44,7 +44,7 @@ This checklist records completed engineering steps separately from the long-form
 - Idle/loaded application GPU memory: about 1,176–1,400 MiB.
 - Installation commands exited successfully; no traceback or conversion failure was recorded.
 
-## Experiment 2 — Roughness Adapter
+## Experiment 2 — Roughness Adapter v1
 
 - [x] Add a disabled-by-default `RoughnessAdapter` extension point to `Synthesizer`.
 - [x] Preserve the legacy state-dict surface while the adapter is disabled.
@@ -64,8 +64,9 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Pass the expanded CEVC GitHub Actions job (`29283738664`).
 - [x] Run the first real adapter extraction/training on the uploaded clean/rough/mixed recordings.
 - [x] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` deterministic A/B controls in inference.
-- [ ] Run and listen to the first real three-output A/B conversion on Tesla T4.
-- [ ] Add audio and metric comparison against the baseline.
+- [x] Run and listen to the first real three-output A/B conversion on Tesla T4.
+- [x] Compare output duration, RMS, peak, clipping and endpoint continuity.
+- [x] Record that v1 failed the acoustic quality gate.
 
 ### First real adapter training result
 
@@ -77,14 +78,65 @@ This checklist records completed engineering steps separately from the long-form
 - Best checkpoint: epoch 18, loss `0.52470`.
 - Export: `logs/egor/egor.cevc.pth`, with an identical copy at `logs/egor/cevc/roughness_adapter_best.pth`.
 
-### Deterministic inference path
+### First real A/B result — acoustic gate failed
 
-- A dedicated `CEVC A/B` tab loads the normal exported RVC model and a separate `.cevc.pth` adapter.
-- One click produces roughness `0.0`, `0.5` and `1.0` WAV files.
-- Every variant resets the same random seed, so stochastic RVC sampling is not confused with the adapter effect.
-- Roughness `0.0` bypasses expressive conditioning and remains the baseline identity path.
-- Inference helper tests and the complete CEVC job passed in GitHub Actions run `29326117722`.
+The fixed external test input was `Новая запись 278.mp3` from the user's Google Drive root. The private audio remains outside the repository.
+
+| Variant | Duration | RMS |
+|---|---:|---:|
+| Input | 27.336 s | -15.71 dB |
+| Roughness 0.0 | 27.135 s | -15.62 dB |
+| Roughness 0.5 | 27.320 s | -16.13 dB |
+| Roughness 1.0 | 26.623 s | -16.26 dB |
+
+- `roughness = 1.0` lost about 0.7 seconds relative to `0.5`.
+- Its final sample was about `-0.1806`, proving that the WAV ended during an active waveform rather than near silence.
+- Increasing roughness mainly reduced level and produced a darker/muddier result.
+- `0.5` and `1.0` were not clearly separated as natural roughness levels.
+- No clipping was detected.
+- The v1 checkpoint remains useful as an engineering artifact, but it is not accepted as a usable acoustic model.
+
+### Root cause hypothesis
+
+- Training reconstructs target audio from a posterior latent, while real inference uses a prior/reverse-flow latent.
+- The v1 loss contains mel L1, waveform L1 and small weight regularization, but no explicit roughness direction, monotonicity, loudness preservation, content preservation or duration requirement.
+- Increasing epochs or adapter capacity before changing the objective would likely strengthen the wrong behaviour.
+
+## Experiment 2B — revised adapter, no new recordings
+
+Detailed plan: [`CEVC_EXPERIMENT_2B_PLAN.md`](CEVC_EXPERIMENT_2B_PLAN.md).
+
+Dataset decision:
+
+- [x] Freeze the existing three source recordings and 170 slices.
+- [x] Do not request additional recordings from the user for Experiment 2B.
+- [x] Keep `Новая запись 278.mp3` as an external fixed test and exclude it from training.
+
+Inference harness:
+
+- [ ] Compute ContentVec, F0, index features and latent once per A/B request.
+- [ ] Decode `0.0`, `0.5` and `1.0` from the same latent.
+- [ ] Require identical output lengths and fail loudly on mismatch.
+- [ ] Add endpoint-discontinuity and duration regression tests.
+- [ ] Save a machine-readable audio comparison report.
+
+Data reuse and supervision:
+
+- [ ] Split train/validation by continuous source-time blocks, not random neighbouring slices.
+- [ ] Generate controlled pseudo-pairs from existing clean slices.
+- [ ] Keep real rough and mixed slices as natural style references.
+- [ ] Train and freeze a small roughness critic on the existing data.
+
+Adapter v2 objective:
+
+- [ ] Add random low/high control pairs from one latent.
+- [ ] Add monotonic roughness-ranking loss.
+- [ ] Add content, F0/voicing and loudness consistency.
+- [ ] Add multi-resolution STFT, HNR and band-aperiodicity losses incrementally.
+- [ ] Prevent simple loudness reduction or spectral darkening from satisfying roughness supervision.
+- [ ] Keep the first v2 attempt at 60k parameters; increase to 200–300k only if the direction is correct.
+- [ ] Use the approximately 1.03M-parameter configuration only after the acoustic gate is passed at smaller capacity.
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 has completed its first real extraction and training run, and the deterministic A/B inference path is implemented and repository-tested. The next gate is a real Colab A/B conversion using an unseen test phrase, followed by listening and objective audio comparison before increasing adapter capacity or training duration.
+Experiment 1 is closed. Experiment 2 v1 completed real training and inference but failed the acoustic gate. No new user recordings are required. The next gate is to repair the single-latent A/B measurement path and train Experiment 2B with explicit roughness-direction, monotonicity, content and loudness constraints using the existing dataset.
