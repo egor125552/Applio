@@ -21,34 +21,62 @@ OUTPUTS = ROOT / "assets" / "audios" / "cevc_ab"
 SUPPORTED_AUDIO = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
 
 
+def _walk_log_files(*suffixes: str) -> list[str]:
+    """Return files below logs, including Google Drive-backed symlink folders."""
+
+    if not LOGS.exists():
+        return []
+
+    wanted = tuple(suffix.lower() for suffix in suffixes)
+    discovered: dict[str, str] = {}
+    visited_directories: set[str] = set()
+
+    for root, directories, files in os.walk(LOGS, followlinks=True):
+        real_root = os.path.realpath(root)
+        if real_root in visited_directories:
+            directories[:] = []
+            continue
+        visited_directories.add(real_root)
+
+        directories[:] = [
+            directory
+            for directory in directories
+            if os.path.realpath(os.path.join(root, directory))
+            not in visited_directories
+        ]
+
+        for filename in files:
+            if not filename.lower().endswith(wanted):
+                continue
+            path = os.path.join(root, filename)
+            real_path = os.path.realpath(path)
+            discovered.setdefault(real_path, os.path.relpath(path, ROOT))
+
+    return sorted(discovered.values())
+
+
 def _voice_models() -> list[str]:
     models = []
-    if not LOGS.exists():
-        return models
-    for path in LOGS.rglob("*.pth"):
-        name = path.name
+    for relative_path in _walk_log_files(".pth"):
+        name = os.path.basename(relative_path)
         if name.startswith(("G_", "D_")) or name.endswith(".cevc.pth"):
             continue
         if name.startswith("roughness_adapter_"):
             continue
-        models.append(os.path.relpath(path, ROOT))
+        models.append(relative_path)
     return sorted(models)
 
 
 def _adapters() -> list[str]:
-    if not LOGS.exists():
-        return []
-    return sorted(os.path.relpath(path, ROOT) for path in LOGS.rglob("*.cevc.pth"))
+    return _walk_log_files(".cevc.pth")
 
 
 def _indexes() -> list[str]:
-    if not LOGS.exists():
-        return []
-    return sorted(
-        os.path.relpath(path, ROOT)
-        for path in LOGS.rglob("*.index")
-        if "trained" not in path.name
-    )
+    return [
+        path
+        for path in _walk_log_files(".index")
+        if "trained" not in os.path.basename(path)
+    ]
 
 
 def _absolute(path: str) -> str:
@@ -72,7 +100,13 @@ def _match_index(model_path: str) -> str:
 
 def _match_adapter(model_path: str) -> str:
     resolved = find_cevc_adapter_for_model(_absolute(model_path))
-    return os.path.relpath(resolved, ROOT) if resolved else ""
+    if resolved:
+        return os.path.relpath(resolved, ROOT)
+
+    model = Path(_absolute(model_path))
+    adapters = [Path(_absolute(path)) for path in _adapters()]
+    same_folder = [path for path in adapters if path.parent == model.parent]
+    return os.path.relpath(same_folder[0], ROOT) if len(same_folder) == 1 else ""
 
 
 def _refresh(model_path: str):
@@ -113,9 +147,6 @@ def _run_ab(
     if not terms_accepted:
         return "You must agree to the Terms of Use to proceed.", None, None, None
     try:
-        # The ordinary Applio interface must start without importing the full
-        # inference stack. Load FAISS, pitch predictors and the RVC pipeline only
-        # after the user explicitly starts an A/B conversion.
         from rvc.infer.cevc import prepare_cevc_converter, seed_cevc_inference
 
         input_path = _absolute(input_audio)
