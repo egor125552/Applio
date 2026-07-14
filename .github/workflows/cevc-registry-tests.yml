@@ -82,7 +82,10 @@ jobs:
             rvc/train/cevc/train_adapter.py \
             rvc/train/cevc/adapter_v2_objective.py \
             rvc/train/cevc/adapter_v2_preflight.py \
+            rvc/train/cevc/adapter_v2_batch_policy.py \
+            rvc/train/cevc/adapter_v2_batch_probe.py \
             rvc/train/cevc/train_adapter_v2.py \
+            rvc/train/cevc/train_adapter_v2_auto.py \
             rvc/train/extract/expressive.py \
             rvc/train/extract/extract.py \
             rvc/train/preprocess/preprocess.py \
