@@ -10,7 +10,10 @@ from rvc.train.cevc.adapter_v2_objective import (
     adapter_v2_losses,
     resample_for_critic,
 )
-from rvc.train.cevc.train_adapter_v2 import validate_adapter_v2_prerequisites
+from rvc.train.cevc.train_adapter_v2 import (
+    _temporary_torch_seed,
+    validate_adapter_v2_prerequisites,
+)
 
 
 class AdapterV2Test(unittest.TestCase):
@@ -49,6 +52,21 @@ class AdapterV2Test(unittest.TestCase):
         self.assertIsNotNone(waveform.grad)
         self.assertTrue(torch.isfinite(waveform.grad).all())
 
+    def test_validation_seed_does_not_change_training_rng(self):
+        torch.manual_seed(123)
+        first = torch.rand(4)
+        expected_second = torch.rand(4)
+        torch.manual_seed(123)
+        repeated_first = torch.rand(4)
+        with _temporary_torch_seed(999):
+            inside_a = torch.rand(4)
+            torch.manual_seed(999)
+            inside_b = torch.rand(4)
+        actual_second = torch.rand(4)
+        self.assertTrue(torch.equal(first, repeated_first))
+        self.assertTrue(torch.equal(inside_a, inside_b))
+        self.assertTrue(torch.equal(expected_second, actual_second))
+
     def test_adapter_gate_pass_and_fail(self):
         passed = adapter_v2_gate(
             {
@@ -56,6 +74,8 @@ class AdapterV2Test(unittest.TestCase):
                 "control_ordered": True,
                 "critic_margin": 0.22,
                 "loudness_drift_db": 0.4,
+                "spectral_distance": 0.18,
+                "clipping_fraction": 0.0,
             }
         )
         failed = adapter_v2_gate(
@@ -64,12 +84,16 @@ class AdapterV2Test(unittest.TestCase):
                 "control_ordered": False,
                 "critic_margin": 0.03,
                 "loudness_drift_db": 2.0,
+                "spectral_distance": 0.70,
+                "clipping_fraction": 0.02,
             }
         )
         self.assertTrue(passed["passed"])
         self.assertEqual(passed["verdict"], "ready_for_acoustic_ab")
         self.assertFalse(failed["passed"])
         self.assertEqual(failed["verdict"], "needs_more_training")
+        self.assertFalse(failed["checks"]["spectrum_is_not_destroyed"])
+        self.assertFalse(failed["checks"]["output_is_not_clipping"])
 
     def _build_preflight_experiment(self, directory, accepted=True):
         experiment = Path(directory)
