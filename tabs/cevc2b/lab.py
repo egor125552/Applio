@@ -60,29 +60,48 @@ def _prepare(experiment_path, validation_percent, seed):
             seed=int(seed),
         )
         preview = result["preview"]
-        ui_manifest, ui_source, ui_weak, ui_medium, ui_strong = publish_files_for_ui(
-            [
-                result["manifest_path"],
-                preview["source"],
-                preview["weak"],
-                preview["medium"],
-                preview["strong"],
-            ],
-            prefix="prepare",
+        profile = result["real_roughness_profile"]
+        ui_manifest, ui_profile, ui_clean, ui_spectral, ui_mixed, ui_rough = (
+            publish_files_for_ui(
+                [
+                    result["manifest_path"],
+                    profile["summary_path"],
+                    preview["clean"],
+                    preview["spectral_only"],
+                    preview["real_mixed"],
+                    preview["real_rough"],
+                ],
+                prefix="prepare",
+            )
         )
-        counts = result["split_counts"]
         status = (
-            "Experiment 2B pseudo-pairs completed and validated. "
-            f"Existing slices: {result['slice_count']}; clean pseudo-pairs: "
-            f"{result['pseudo_pair_count']}. Split counts: {counts}. "
+            "Experiment 2B real-only dataset completed and validated. "
+            f"Existing slices: {result['slice_count']}; split counts: "
+            f"{result['split_counts']}. Synthetic training targets: disabled. "
             f"Persistent dataset: {result['dataset_root']}. "
-            "UI previews were copied to the system temporary directory so Gradio "
-            "does not attempt to serve Google Drive paths directly."
+            "The spectral-only preview is diagnostic and will never be used as a "
+            "rough voice target."
         )
-        return status, ui_manifest, ui_source, ui_weak, ui_medium, ui_strong
+        return (
+            status,
+            ui_manifest,
+            ui_profile,
+            ui_clean,
+            ui_spectral,
+            ui_mixed,
+            ui_rough,
+        )
     except Exception as error:
         traceback.print_exc()
-        return f"CEVC 2B preparation failed: {error}", None, None, None, None, None
+        return (
+            f"CEVC 2B preparation failed: {error}",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def _train_critic(
@@ -113,13 +132,15 @@ def _train_critic(
             prefix="critic",
         )
         metrics = result["last_metrics"]
+        means = metrics["class_mean_scores"]
         status = (
-            "Roughness Critic training completed. "
+            "Real-only Roughness Critic training completed. "
             f"Device={result['device']}; parameters={result['parameters']:,}; "
-            f"real MAE={metrics['real_score_mae']:.4f}; "
-            f"pair MAE={metrics['pair_score_mae']:.4f}; "
-            f"monotonic rate={metrics['pair_monotonic_rate']:.3f}; "
-            f"class accuracy={metrics['class_accuracy']:.3f}. "
+            f"MAE={metrics['real_score_mae']:.4f}; "
+            f"class accuracy={metrics['class_accuracy']:.3f}; "
+            f"ordered={bool(metrics['class_ordered'])}; "
+            f"mean scores: clean={means['clean']:.3f}, mixed={means['mixed']:.3f}, "
+            f"rough={means['rough']:.3f}. "
             f"Persistent checkpoint: {result['best_checkpoint']}."
         )
         return status, ui_checkpoint, ui_history
@@ -133,11 +154,11 @@ def cevc2b_lab_tab():
     default = experiments[-1] if experiments else ""
 
     gr.Markdown(
-        "## CEVC 2B Lab — reuse the existing recordings\n"
-        "The workflow uses only the existing clean, mixed and rough recordings. "
-        "Run the stages from top to bottom. Persistent generated files are stored "
-        "inside the selected experiment folder on Google Drive; UI copies are "
-        "served from a temporary local directory."
+        "## CEVC 2B Lab — real recordings only\n"
+        "The trainable stages use only the existing real clean, mixed and rough "
+        "recordings. No synthetic noisy WAV is treated as a rough voice target. "
+        "Persistent files remain inside the experiment folder on Google Drive; "
+        "temporary UI copies are served locally for Gradio."
     )
     with gr.Row():
         experiment = gr.Dropdown(
@@ -150,7 +171,7 @@ def cevc2b_lab_tab():
         refresh = gr.Button("Refresh experiments")
     refresh.click(_refresh, inputs=[experiment], outputs=[experiment], show_progress=False)
 
-    gr.Markdown("### Stage 1 — contiguous split and same-phrase pseudo-pairs")
+    gr.Markdown("### Stage 1 — real split and roughness reference profile")
     with gr.Accordion("Dataset preparation settings", open=False):
         validation = gr.Slider(
             10,
@@ -161,32 +182,42 @@ def cevc2b_lab_tab():
         )
         seed = gr.Number(value=20260714, precision=0, label="Deterministic seed")
         gr.Markdown(
-            "Generated target strengths: **0.25, 0.55 and 0.85**. "
-            "All levels use the same deterministic perturbation pattern per phrase; "
-            "only the strength changes. Sample count and RMS are validated before "
-            "the manifest is accepted. Existing `cevc2b/pseudo_pairs` is replaced."
+            "Stage 1 builds a real clean/mixed/rough train-validation split and "
+            "extracts a reference profile from the actual rough recordings. The "
+            "spectral-only preview is an EQ diagnostic, not a training target."
         )
 
-    prepare_button = gr.Button("Prepare and validate Experiment 2B pseudo-pairs")
+    prepare_button = gr.Button("Prepare and validate real CEVC 2B dataset")
     prepare_status = gr.Textbox(label="Dataset preparation status")
-    manifest = gr.File(label="Experiment 2B manifest (.json)")
-    gr.Markdown("#### Validation preview")
     with gr.Row():
-        source = gr.Audio(label="Same clean slice — roughness 0.00")
-        weak = gr.Audio(label="Synthetic supervision — roughness 0.25")
-        medium = gr.Audio(label="Synthetic supervision — roughness 0.55")
-        strong = gr.Audio(label="Synthetic supervision — roughness 0.85")
+        manifest = gr.File(label="Experiment 2B manifest (.json)")
+        profile_file = gr.File(label="Real roughness profile (.json)")
+    gr.Markdown("#### Reference comparison")
+    with gr.Row():
+        clean = gr.Audio(label="Real clean reference")
+        spectral = gr.Audio(label="Clean + spectral profile only — diagnostic")
+        mixed = gr.Audio(label="Real mixed reference")
+        rough = gr.Audio(label="Real rough reference")
 
     prepare_button.click(
         _prepare,
         inputs=[experiment, validation, seed],
-        outputs=[prepare_status, manifest, source, weak, medium, strong],
+        outputs=[
+            prepare_status,
+            manifest,
+            profile_file,
+            clean,
+            spectral,
+            mixed,
+            rough,
+        ],
     )
 
-    gr.Markdown("### Stage 2 — train the Roughness Critic")
+    gr.Markdown("### Stage 2 — train the real-only Roughness Critic")
     gr.Markdown(
-        "The critic learns natural clean/mixed/rough classes from real slices. "
-        "Pseudo-pairs only teach ordered control values for the same phrase."
+        "The critic sees only real clean, mixed and rough slices. The same random "
+        "gain, EQ and low-level noise augmentation is applied across all classes, "
+        "so it cannot pass merely by detecting recording loudness or broadband noise."
     )
     with gr.Accordion("Critic training settings", open=False):
         critic_epochs = gr.Slider(5, 150, value=80, step=1, label="Critic epochs")
@@ -203,7 +234,7 @@ def cevc2b_lab_tab():
             [32, 64, 96], value=64, label="Critic hidden channels"
         )
 
-    critic_button = gr.Button("Train Roughness Critic")
+    critic_button = gr.Button("Train real-only Roughness Critic")
     critic_status = gr.Textbox(label="Roughness Critic status")
     with gr.Row():
         critic_checkpoint = gr.File(label="Best Roughness Critic checkpoint")
@@ -224,6 +255,6 @@ def cevc2b_lab_tab():
 
     gr.Markdown(
         "### Stage 3 — Adapter v2\n"
-        "This section will unlock after the critic passes validation: monotonic "
-        "pair ordering, useful class accuracy and stable score error."
+        "Adapter v2 will be trained against the frozen real-only critic and the "
+        "saved real roughness profile, with content, F0 and loudness constraints."
     )
