@@ -84,14 +84,23 @@ jobs:
           import torch
 
           root = Path("logs/cevc_e2e")
-          config = json.loads((root / "config.json").read_text())
+          config_path = root / "config.json"
+          config = json.loads(config_path.read_text())
+
+          # Match a real Applio experiment. Runtime filelist paths are not serialized
+          # into config.json; the training command supplies them when building a loader.
+          config["data"].pop("training_files", None)
+          config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+          config = json.loads(config_path.read_text())
+          assert "training_files" not in config["data"]
+
           assert config["data"]["filter_length"] // 2 + 1 == 33
           assert math.prod(config["model"]["upsample_rates"]) == config["data"]["hop_length"]
           checkpoint = torch.load(root / "G_1.pth", map_location="cpu", weights_only=True)
           assert checkpoint.get("model"), "Mini RVC checkpoint has no model state"
           rows = [row for row in (root / "filelist.txt").read_text().splitlines() if row]
           assert len(rows) == 30, len(rows)
-          print("Mini RVC fixture integrity checks passed.")
+          print("Mini RVC fixture matches the real config shape without training_files.")
           PY
 
       - name: Start the real CEVC 2B Gradio interface
@@ -131,6 +140,7 @@ jobs:
 
           root = Path("logs/cevc_e2e/cevc2b/adapter_v2")
           report = json.loads((root / "browser_e2e_report.json").read_text())
+          summary = json.loads((root / "adapter_v2_summary.json").read_text())
           critic = report["critic"]
           adapter = report["adapter_v2"]
           assert critic["optimizer_steps_completed"] >= 20, critic
@@ -138,25 +148,35 @@ jobs:
           assert adapter["epochs"] == 30, adapter
           assert adapter["production_prior_latent_path"] is True, adapter
           assert report["total_optimizer_steps_completed"] >= 40, report
+
+          batch_selection = summary["batch_selection"]
+          assert batch_selection["requested"] == "auto", batch_selection
+          assert int(batch_selection["selected"]) == 4, batch_selection
+          assert batch_selection["selection_device"] == "cpu", batch_selection
+          assert batch_selection["automatic_gpu_probe"] is False, batch_selection
+          probe_path = root / "adapter_v2_batch_probe.json"
+          assert probe_path.is_file() and probe_path.stat().st_size > 0, probe_path
+
           for name in (
-              "adapter_v2_summary.json",
-              "adapter_v2_history.json",
-              "roughness_adapter_v2_best.pth",
-              "roughness_adapter_v2_final.pth",
-              "browser_e2e_report.json",
-              "browser_final.png",
+            "adapter_v2_summary.json",
+            "adapter_v2_history.json",
+            "adapter_v2_batch_probe.json",
+            "roughness_adapter_v2_best.pth",
+            "roughness_adapter_v2_final.pth",
+            "browser_e2e_report.json",
+            "browser_final.png",
           ):
-              path = root / name
-              assert path.is_file() and path.stat().st_size > 0, path
+            path = root / name
+            assert path.is_file() and path.stat().st_size > 0, path
           critic_root = Path("logs/cevc_e2e/cevc2b/critic")
           for name in (
-              "critic_summary.json",
-              "critic_history.json",
-              "roughness_critic_best.pth",
-              "roughness_critic_final.pth",
+            "critic_summary.json",
+            "critic_history.json",
+            "roughness_critic_best.pth",
+            "roughness_critic_final.pth",
           ):
-              path = critic_root / name
-              assert path.is_file() and path.stat().st_size > 0, path
+            path = critic_root / name
+            assert path.is_file() and path.stat().st_size > 0, path
           export_path = Path("logs/cevc_e2e/cevc_e2e_v2.cevc.pth")
           assert export_path.is_file() and export_path.stat().st_size > 0
           print(json.dumps(report, indent=2))
