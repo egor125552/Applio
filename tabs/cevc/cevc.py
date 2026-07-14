@@ -119,7 +119,7 @@ def _refresh(model_path: str):
     )
 
 
-def _output_paths(input_path: str) -> tuple[str, str, str]:
+def _output_paths(input_path: str) -> tuple[str, str, str, str]:
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^0-9A-Za-zА-Яа-я._-]+", "_", Path(input_path).stem)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -128,6 +128,7 @@ def _output_paths(input_path: str) -> tuple[str, str, str]:
         str(base) + "_roughness_0.wav",
         str(base) + "_roughness_05.wav",
         str(base) + "_roughness_1.wav",
+        str(base) + "_report.json",
     )
 
 
@@ -147,7 +148,8 @@ def _run_ab(
     if not terms_accepted:
         return "You must agree to the Terms of Use to proceed.", None, None, None
     try:
-        from rvc.infer.cevc import prepare_cevc_converter, seed_cevc_inference
+        from rvc.infer.cevc import prepare_cevc_converter
+        from rvc.infer.cevc_ab_runtime import convert_cevc_ab
 
         input_path = _absolute(input_audio)
         model = _absolute(model_path)
@@ -166,34 +168,40 @@ def _run_ab(
             sid=int(sid or 0),
             roughness_strength=0.0,
         )
-        outputs = _output_paths(input_path)
-        variants = ((0.0, outputs[0]), (0.5, outputs[1]), (1.0, outputs[2]))
-        for strength, output in variants:
-            converter.vc.set_roughness_strength(strength)
-            seed_cevc_inference()
-            converter.convert_audio(
-                audio_input_path=input_path,
-                audio_output_path=output,
-                model_path=model,
-                index_path=index,
-                pitch=int(pitch),
-                f0_method=f0_method,
-                index_rate=float(index_rate),
-                protect=float(protect),
-                split_audio=bool(split_audio),
-                export_format="WAV",
-                sid=int(sid or 0),
-            )
+        zero_path, half_path, full_path, report_path = _output_paths(input_path)
+        report = convert_cevc_ab(
+            converter,
+            audio_input_path=input_path,
+            output_paths={
+                0.0: zero_path,
+                0.5: half_path,
+                1.0: full_path,
+            },
+            report_path=report_path,
+            index_path=index,
+            pitch=int(pitch),
+            f0_method=f0_method,
+            index_rate=float(index_rate),
+            protect=float(protect),
+            split_audio=bool(split_audio),
+            sid=int(sid or 0),
+        )
 
         parameters = sum(
             parameter.numel() for parameter in converter.net_g.cevc_adapter.parameters()
         )
+        metrics = report["outputs"]
         status = (
-            "CEVC A/B completed. The same deterministic seed was used for all "
-            f"three conversions. Adapter: {resolved_adapter}; "
-            f"epoch={payload.get('epoch')}; parameters={parameters:,}."
+            "CEVC A/B completed from one shared latent. "
+            f"All outputs contain {report['sample_count']} samples at "
+            f"{report['sample_rate']} Hz. "
+            f"RMS: 0={metrics['0']['rms_db']:.2f} dB, "
+            f"0.5={metrics['0.5']['rms_db']:.2f} dB, "
+            f"1={metrics['1']['rms_db']:.2f} dB. "
+            f"Adapter: {resolved_adapter}; epoch={payload.get('epoch')}; "
+            f"parameters={parameters:,}. Report: {report_path}"
         )
-        return status, outputs[0], outputs[1], outputs[2]
+        return status, zero_path, half_path, full_path
     except Exception as error:
         traceback.print_exc()
         return f"CEVC A/B failed: {error}", None, None, None
@@ -204,9 +212,10 @@ def cevc_tab():
     default_model = models[-1] if models else ""
 
     gr.Markdown(
-        "## CEVC Roughness Adapter — deterministic A/B\n"
-        "One click converts the same recording at roughness 0.0, 0.5 and 1.0. "
-        "Roughness 0.0 is the baseline identity path."
+        "## CEVC Roughness Adapter — one-latent A/B\n"
+        "One click prepares ContentVec, F0, index features and the stochastic latent "
+        "once, then decodes roughness 0.0, 0.5 and 1.0. The tab refuses to save "
+        "outputs with different lengths and writes a JSON diagnostic report."
     )
     input_audio = gr.Audio(
         label=i18n("Upload or record test audio"),
@@ -271,7 +280,7 @@ def cevc_tab():
         value=False,
         interactive=True,
     )
-    run_button = gr.Button("Run CEVC A/B: 0.0 / 0.5 / 1.0")
+    run_button = gr.Button("Run one-latent CEVC A/B: 0.0 / 0.5 / 1.0")
     status = gr.Textbox(label=i18n("Output Information"))
     with gr.Row():
         output_zero = gr.Audio(label="Roughness 0.0 — baseline")
