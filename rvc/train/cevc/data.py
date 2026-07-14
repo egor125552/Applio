@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 
-from rvc.train.data_utils import TextAudioLoaderMultiNSFsid
+# Legacy RVC training modules import ``mel_processing`` and ``utils`` as
+# top-level modules. The original v1 trainer prepared this path before importing
+# the dataset, but Adapter v2 imports the dataset directly. Prepare the same
+# compatibility path here so every CEVC training entrypoint behaves identically.
+ROOT = Path(__file__).resolve().parents[3]
+TRAIN_DIR = ROOT / "rvc" / "train"
+if str(TRAIN_DIR) not in sys.path:
+    sys.path.insert(0, str(TRAIN_DIR))
+
+from rvc.train.data_utils import TextAudioLoaderMultiNSFsid  # noqa: E402
 
 
 class CEVCTextAudioLoader(TextAudioLoaderMultiNSFsid):
