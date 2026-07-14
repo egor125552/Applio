@@ -91,6 +91,17 @@ jobs:
           print("CEVC tab modules imported successfully.", flush=True)
           PY
 
+      - name: Import heavy Adapter v2 training path
+        run: |
+          python -u - <<'PY'
+          print("Importing the same heavy Adapter v2 path used by the button...", flush=True)
+          from rvc.train.cevc.data import CEVCTextAudioLoader
+          from rvc.train.cevc.train_adapter_v2 import train_adapter_v2
+          from rvc.train.cevc.adapter_v2_batch_probe import probe_adapter_v2_batch_size
+          from rvc.train.cevc.train_adapter_v2_auto import train_adapter_v2_auto
+          print("Heavy Adapter v2 imports passed, including legacy mel_processing resolution.", flush=True)
+          PY
+
       - name: Discover CEVC files through a Drive-style symlink
         run: |
           python -u - <<'PY'
