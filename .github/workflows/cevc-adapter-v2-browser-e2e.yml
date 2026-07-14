@@ -58,8 +58,10 @@ jobs:
         run: cp -n assets/config_template.json assets/config.json
 
       - name: Build a mini RVC experiment from public real speech
+        shell: bash
         run: |
-          python -u tests/cevc_adapter_v2_e2e_fixture.py
+          set -o pipefail
+          python -u tests/cevc_adapter_v2_e2e_fixture.py 2>&1 | tee /tmp/cevc_adapter_v2_e2e_fixture.log
           test -s logs/cevc_e2e/public_jfk.flac
           test -s logs/cevc_e2e/G_1.pth
           test -s logs/cevc_e2e/cevc2b/critic/roughness_critic_best.pth
@@ -120,6 +122,7 @@ jobs:
           name: cevc-adapter-v2-browser-e2e
           if-no-files-found: warn
           path: |
+            /tmp/cevc_adapter_v2_e2e_fixture.log
             /tmp/cevc_adapter_v2_e2e_server.log
             logs/cevc_e2e/cevc2b/experiment2b_manifest.json
             logs/cevc_e2e/cevc2b/real_profile/*.json
