@@ -7,7 +7,6 @@ import traceback
 from pathlib import Path
 
 import gradio as gr
-
 from rvc.train.cevc.ui_exports import publish_files_for_ui
 
 
@@ -26,7 +25,10 @@ def _experiment_dirs():
             directories[:] = []
             continue
         visited.add(real_root)
-        if "cevc_expressive_manifest.json" in files and "sliced_audios_16k" in directories:
+        if (
+            "cevc_expressive_manifest.json" in files
+            and "sliced_audios_16k" in directories
+        ):
             found.setdefault(real_root, os.path.relpath(root, ROOT))
         directories[:] = [
             name
@@ -114,6 +116,8 @@ def _train_critic(
     seed,
 ):
     try:
+        import torch
+
         from rvc.train.cevc.train_critic import train_roughness_critic
 
         if not experiment_path:
@@ -131,16 +135,22 @@ def _train_critic(
             [result["best_checkpoint"], result["history_path"]],
             prefix="critic",
         )
-        metrics = result["last_metrics"]
+        best_payload = torch.load(
+            result["best_checkpoint"], map_location="cpu", weights_only=False
+        )
+        metrics = best_payload["metrics"]
         means = metrics["class_mean_scores"]
         status = (
-            "Real-only Roughness Critic training completed. "
-            f"Device={result['device']}; parameters={result['parameters']:,}; "
-            f"MAE={metrics['real_score_mae']:.4f}; "
+            "Clean/rough-anchor Roughness Critic training completed. "
+            f"Best epoch={best_payload['epoch']}; device={result['device']}; "
+            f"parameters={result['parameters']:,}; "
+            f"anchor MAE={metrics['anchor_score_mae']:.4f}; "
             f"class accuracy={metrics['class_accuracy']:.3f}; "
-            f"ordered={bool(metrics['class_ordered'])}; "
-            f"mean scores: clean={means['clean']:.3f}, mixed={means['mixed']:.3f}, "
-            f"rough={means['rough']:.3f}. "
+            f"clean-to-rough margin={metrics['clean_to_rough_margin']:.3f}; "
+            f"anchor ordered={bool(metrics['anchor_ordered'])}; "
+            f"diagnostic means: clean={means['clean']:.3f}, "
+            f"mixed={means['mixed']:.3f}, rough={means['rough']:.3f}. "
+            "Mixed is a real class but has no fabricated scalar target. "
             f"Persistent checkpoint: {result['best_checkpoint']}."
         )
         return status, ui_checkpoint, ui_history
@@ -169,7 +179,9 @@ def cevc2b_lab_tab():
             allow_custom_value=True,
         )
         refresh = gr.Button("Refresh experiments")
-    refresh.click(_refresh, inputs=[experiment], outputs=[experiment], show_progress=False)
+    refresh.click(
+        _refresh, inputs=[experiment], outputs=[experiment], show_progress=False
+    )
 
     gr.Markdown("### Stage 1 — real split and roughness reference profile")
     with gr.Accordion("Dataset preparation settings", open=False):
@@ -215,13 +227,20 @@ def cevc2b_lab_tab():
 
     gr.Markdown("### Stage 2 — train the real-only Roughness Critic")
     gr.Markdown(
-        "The critic sees only real clean, mixed and rough slices. The same random "
-        "gain, EQ and low-level noise augmentation is applied across all classes, "
-        "so it cannot pass merely by detecting recording loudness or broadband noise."
+        "The scalar roughness axis is anchored only by real clean and real rough "
+        "recordings. Mixed remains a supervised real class, but it is not forced "
+        "to an invented score of 0.50 because it contains time-varying transitions. "
+        "The same random gain, EQ and low-level noise augmentation is applied across "
+        "all classes, so the critic cannot pass merely by detecting recording "
+        "loudness or broadband noise."
     )
     with gr.Accordion("Critic training settings", open=False):
-        critic_epochs = gr.Slider(5, 150, value=80, step=1, label="Critic epochs")
-        critic_batch = gr.Slider(4, 32, value=32, step=1, label="Real-item batch size")
+        critic_epochs = gr.Slider(
+            5, 150, value=80, step=1, label="Critic epochs"
+        )
+        critic_batch = gr.Slider(
+            4, 32, value=32, step=1, label="Real-item batch size"
+        )
         critic_lr = gr.Number(value=0.0003, label="Critic learning rate")
         critic_crop = gr.Slider(
             1.0,
@@ -234,7 +253,7 @@ def cevc2b_lab_tab():
             [32, 64, 96], value=64, label="Critic hidden channels"
         )
 
-    critic_button = gr.Button("Train real-only Roughness Critic")
+    critic_button = gr.Button("Train clean/rough-anchor Roughness Critic")
     critic_status = gr.Textbox(label="Roughness Critic status")
     with gr.Row():
         critic_checkpoint = gr.File(label="Best Roughness Critic checkpoint")
@@ -255,6 +274,7 @@ def cevc2b_lab_tab():
 
     gr.Markdown(
         "### Stage 3 — Adapter v2\n"
-        "Adapter v2 will be trained against the frozen real-only critic and the "
-        "saved real roughness profile, with content, F0 and loudness constraints."
+        "Adapter v2 will be trained against the frozen clean/rough-anchor critic "
+        "and the saved real roughness profile, with content, F0 and loudness "
+        "constraints."
     )
