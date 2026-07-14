@@ -288,7 +288,7 @@ def convert_cevc_ab(
         converter.tgt_sr,
         converter.config,
         base_pipeline.feature_stats,
-        0.0,
+        1.0,
     )
     audio = load_audio_infer(audio_input_path, 16000)
     audio_max = np.abs(audio).max() / 0.95
