@@ -132,7 +132,7 @@ jobs:
           print("CEVC Gradio tabs constructed successfully.", flush=True)
           PY
 
-      - name: Run real-only CEVC 2B preparation through Gradio postprocess
+      - name: Run CEVC 2B preparation and critic button through Gradio postprocess
         run: |
           python -u - <<'PY'
           import asyncio
@@ -147,7 +147,7 @@ jobs:
           from gradio import processing_utils
           from gradio.context import LocalContext
 
-          from tabs.cevc2b.lab import LOGS, _prepare
+          from tabs.cevc2b.lab import LOGS, _prepare, _train_critic
 
           external = Path.home() / "cevc2b_drive_smoke"
           shutil.rmtree(external, ignore_errors=True)
@@ -199,28 +199,58 @@ jobs:
               link.unlink()
           link.symlink_to(external, target_is_directory=True)
           try:
-              result = _prepare("logs/cevc2b_drive_smoke", 25, 1234)
-              status, manifest, profile, clean, spectral, mixed, rough = result
-              assert "real-only dataset completed and validated" in status, status
-              assert "Synthetic training targets: disabled" in status, status
+              prepared = _prepare("logs/cevc2b_drive_smoke", 25, 1234)
+              status, manifest, profile, clean, spectral, mixed, rough = prepared
+              assert "Подготовка завершена" in status, status
+              assert "Следующий шаг" in status, status
               assert (external / "cevc2b" / "experiment2b_manifest.json").is_file()
               assert (external / "cevc2b" / "real_profile" / "real_roughness_profile.npz").is_file()
-              returned = [manifest, profile, clean, spectral, mixed, rough]
-              for path in returned:
+              preparation_files = [manifest, profile, clean, spectral, mixed, rough]
+              for path in preparation_files:
                   resolved = Path(path).resolve()
                   assert resolved.is_file(), resolved
                   assert resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
                   assert not resolved.is_relative_to(external.resolve())
 
+              trained = _train_critic(
+                  "logs/cevc2b_drive_smoke",
+                  1,
+                  6,
+                  0.0005,
+                  0.25,
+                  32,
+                  1234,
+              )
+              critic_status, checkpoint, summary, history = trained
+              assert "Обучение завершено" in critic_status, critic_status
+              assert "CRITIC" in critic_status, critic_status
+              critic_files = [checkpoint, summary, history]
+              for path in critic_files:
+                  resolved = Path(path).resolve()
+                  assert resolved.is_file(), resolved
+                  assert resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+                  assert not resolved.is_relative_to(external.resolve())
+
+              persistent_summary = external / "cevc2b" / "critic" / "critic_summary.json"
+              summary_payload = json.loads(persistent_summary.read_text(encoding="utf-8"))
+              assert summary_payload["format"] == "cevc-critic-human-summary-v1"
+              assert "accepted_for_adapter_v2" in summary_payload
+              assert "explanation_ru" in summary_payload
+
               with gr.Blocks() as blocks:
-                  file_outputs = [gr.File(), gr.File()]
-                  audio_outputs = [gr.Audio() for _ in range(4)]
+                  preparation_outputs = [gr.File(), gr.File(), *[gr.Audio() for _ in range(4)]]
+                  critic_outputs = [gr.File(), gr.File(), gr.File()]
               blocks.has_launched = True
               token = LocalContext.blocks.set(blocks)
 
               async def verify_gradio_outputs():
-                  components = [*file_outputs, *audio_outputs]
-                  for component, value in zip(components, returned):
+                  for component, value in zip(preparation_outputs, preparation_files):
+                      payload = component.postprocess(value)
+                      cached = await processing_utils.async_move_files_to_cache(
+                          payload, component, postprocess=True
+                      )
+                      assert cached["path"]
+                  for component, value in zip(critic_outputs, critic_files):
                       payload = component.postprocess(value)
                       cached = await processing_utils.async_move_files_to_cache(
                           payload, component, postprocess=True
@@ -236,7 +266,7 @@ jobs:
                   link.unlink()
               shutil.rmtree(external, ignore_errors=True)
 
-          print("Real-only CEVC 2B button passed actual Gradio file postprocessing.")
+          print("CEVC 2B preparation and critic button passed real Gradio postprocessing.")
           PY
 
   download-and-load-rmvpe:
