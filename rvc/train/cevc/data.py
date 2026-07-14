@@ -18,7 +18,17 @@ TRAIN_DIR = ROOT / "rvc" / "train"
 if str(TRAIN_DIR) not in sys.path:
     sys.path.insert(0, str(TRAIN_DIR))
 
+from utils import HParams  # noqa: E402
 from rvc.train.data_utils import TextAudioLoaderMultiNSFsid  # noqa: E402
+
+# Real Applio experiment config.json files contain model/data hyperparameters,
+# while ``training_files`` is a runtime-only value supplied by the training
+# command. Adapter v2 temporarily swaps that value for its clean train and
+# validation filelists. Give missing HParams instances an explicit class-level
+# default so reading the previous value is safe without requiring the field to
+# be serialized into config.json.
+if not hasattr(HParams, "training_files"):
+    HParams.training_files = None
 
 
 class CEVCTextAudioLoader(TextAudioLoaderMultiNSFsid):
