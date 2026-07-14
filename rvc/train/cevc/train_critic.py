@@ -26,6 +26,66 @@ CLASS_SPECS = {
     "rough": {"score_target": 0.95, "class_id": 2, "score_anchor": True},
 }
 CLASS_NAMES = {0: "clean", 1: "mixed", 2: "rough"}
+GATE_THRESHOLDS = {
+    "anchor_score_mae_max": 0.20,
+    "class_accuracy_min": 0.70,
+    "clean_to_rough_margin_min": 0.35,
+}
+
+
+def _console(message: str) -> None:
+    print(f"[CEVC Critic] {message}", flush=True)
+
+
+def _gate_result(metrics: dict) -> dict:
+    checks = {
+        "clean_and_rough_are_ordered": bool(metrics.get("anchor_ordered", 0.0)),
+        "clean_to_rough_separation_is_large_enough": float(
+            metrics.get("clean_to_rough_margin", 0.0)
+        )
+        >= GATE_THRESHOLDS["clean_to_rough_margin_min"],
+        "anchor_error_is_low_enough": float(metrics.get("anchor_score_mae", 1.0))
+        <= GATE_THRESHOLDS["anchor_score_mae_max"],
+        "three_class_recognition_is_good_enough": float(
+            metrics.get("class_accuracy", 0.0)
+        )
+        >= GATE_THRESHOLDS["class_accuracy_min"],
+    }
+    accepted = all(checks.values())
+    return {
+        "accepted": accepted,
+        "verdict": "accepted_for_adapter_v2" if accepted else "needs_retraining",
+        "checks": checks,
+        "thresholds": dict(GATE_THRESHOLDS),
+    }
+
+
+def _human_progress(metrics: dict) -> str:
+    margin = float(metrics.get("clean_to_rough_margin", 0.0))
+    accuracy = float(metrics.get("class_accuracy", 0.0))
+    mae = float(metrics.get("anchor_score_mae", 1.0))
+
+    separation = (
+        "уверенное"
+        if margin >= GATE_THRESHOLDS["clean_to_rough_margin_min"]
+        else "пока слабое"
+    )
+    recognition = (
+        "хорошее"
+        if accuracy >= GATE_THRESHOLDS["class_accuracy_min"]
+        else "среднее"
+        if accuracy >= 0.50
+        else "пока слабое"
+    )
+    anchors = (
+        "точные"
+        if mae <= GATE_THRESHOLDS["anchor_score_mae_max"]
+        else "ещё неточные"
+    )
+    return (
+        f"разделение чистого и хриплого — {separation}; "
+        f"распознавание трёх типов — {recognition}; якоря — {anchors}"
+    )
 
 
 def _augment_audio(audio, sample_rate, seed):
@@ -133,6 +193,16 @@ def _datasets(experiment, manifest):
                     f"Critic {split} split has no {CLASS_NAMES[class_id]} slices"
                 )
     return datasets
+
+
+def _dataset_counts(datasets: dict) -> dict:
+    return {
+        split: {
+            CLASS_NAMES[class_id]: len(entries)
+            for class_id, entries in classes.items()
+        }
+        for split, classes in datasets.items()
+    }
 
 
 def _balanced_batch(class_entries, batch_size, sample_count, seed, device):
@@ -276,8 +346,10 @@ def train_roughness_critic(
     seed=20260714,
     device=None,
 ):
+    _console("Шаг 1 из 4. Проверяю подготовленные реальные записи и разбиение.")
     experiment, manifest_path, manifest = _load_manifest(experiment_dir)
     datasets = _datasets(experiment, manifest)
+    counts = _dataset_counts(datasets)
     device = torch.device(
         device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     )
@@ -297,10 +369,28 @@ def train_roughness_critic(
     best_path = output_dir / "roughness_critic_best.pth"
     final_path = output_dir / "roughness_critic_final.pth"
     history_path = output_dir / "critic_history.json"
+    summary_path = output_dir / "critic_summary.json"
     history = []
     best_quality = float("inf")
+    best_record = None
+    best_epoch = 0
     train_count = sum(len(items) for items in datasets["train"].values())
     steps = max(1, math.ceil(train_count / int(batch_size)))
+    report_interval = max(1, int(epochs) // 8)
+    first_accepted_epoch = None
+
+    _console(
+        "Данные готовы. Используются только настоящие clean, mixed и rough; "
+        "синтетические шумовые цели выключены."
+    )
+    _console(
+        f"Шаг 2 из 4. Начинаю обучение на {device}. "
+        f"Эпох: {int(epochs)}; батч: {int(batch_size)}."
+    )
+    _console(
+        "В консоли показывается только понятный прогресс. Все подробные числа "
+        "записываются в critic_history.json."
+    )
 
     for epoch in range(1, int(epochs) + 1):
         model.train()
@@ -369,27 +459,100 @@ def train_roughness_critic(
                 "real_roughness_profile", {}
             ).get("profile_npz"),
         }
-        if quality < best_quality:
+        is_best = quality < best_quality
+        if is_best:
             best_quality = quality
+            best_record = dict(record)
+            best_epoch = epoch
             torch.save(payload, best_path)
         torch.save(payload, final_path)
         history_path.write_text(
             json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        print(
-            f"CEVC anchor critic epoch {epoch}/{epochs}: "
-            f"loss={record['train_loss']:.4f}, "
-            f"anchor_mae={record['anchor_score_mae']:.4f}, "
-            f"clean_to_rough={record['clean_to_rough_margin']:.3f}, "
-            f"acc={record['class_accuracy']:.3f}, "
-            f"means={record['class_mean_scores']}"
-        )
+
+        current_gate = _gate_result(record)
+        newly_accepted = current_gate["accepted"] and first_accepted_epoch is None
+        if newly_accepted:
+            first_accepted_epoch = epoch
+        if (
+            epoch == 1
+            or epoch == int(epochs)
+            or epoch % report_interval == 0
+            or newly_accepted
+        ):
+            suffix = " Критерии уже выполнены." if current_gate["accepted"] else ""
+            _console(
+                f"Эпоха {epoch} из {int(epochs)}: {_human_progress(record)}.{suffix}"
+            )
+
+    if best_record is None:
+        raise RuntimeError("Critic training completed without a valid checkpoint")
+
+    _console("Шаг 3 из 4. Проверяю лучший checkpoint по контрольным критериям.")
+    gate = _gate_result(best_record)
+    accepted = bool(gate["accepted"])
+    explanation = (
+        "Critic уверенно отличает чистый голос от хриплого и пригоден как "
+        "замороженный учитель для Adapter v2."
+        if accepted
+        else "Critic пока не прошёл все критерии. Adapter v2 запускать рано."
+    )
+    next_step = (
+        "Можно переходить к обучению Adapter v2."
+        if accepted
+        else "Нужно изменить настройки или постановку critic и обучить его снова."
+    )
+    summary = {
+        "format": "cevc-critic-human-summary-v1",
+        "result": gate["verdict"],
+        "accepted_for_adapter_v2": accepted,
+        "explanation_ru": explanation,
+        "next_step_ru": next_step,
+        "best_epoch": int(best_epoch),
+        "best_metrics": best_record,
+        "gate": gate,
+        "dataset_counts": counts,
+        "settings": {
+            "epochs": int(epochs),
+            "batch_size": int(batch_size),
+            "learning_rate": float(learning_rate),
+            "crop_seconds": float(crop_seconds),
+            "hidden_channels": int(hidden_channels),
+            "seed": int(seed),
+            "device": str(device),
+        },
+        "files": {
+            "best_checkpoint": str(best_path),
+            "final_checkpoint": str(final_path),
+            "full_history": str(history_path),
+            "summary": str(summary_path),
+        },
+        "notes": {
+            "mixed_is_diagnostic_only_for_scalar_axis": True,
+            "raw_metrics_are_kept_in_json_not_spammed_to_console": True,
+        },
+    }
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    verdict = "ПРИНЯТ" if accepted else "НЕ ПРИНЯТ"
+    _console(f"Шаг 4 из 4. Обучение завершено. Итог: {verdict}.")
+    _console(explanation)
+    _console(f"Лучший вариант найден на эпохе {best_epoch}.")
+    _console(f"Короткий отчёт для передачи: {summary_path}")
+    _console(f"Полная техническая история: {history_path}")
+    _console(f"Лучший checkpoint: {best_path}")
 
     return {
         "best_checkpoint": str(best_path),
         "final_checkpoint": str(final_path),
         "history_path": str(history_path),
+        "summary_path": str(summary_path),
         "best_quality": best_quality,
+        "best_epoch": int(best_epoch),
+        "best_metrics": best_record,
+        "gate": gate,
         "parameters": critic_parameter_count(model),
         "last_metrics": history[-1],
         "device": str(device),
