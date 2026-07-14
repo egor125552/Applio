@@ -109,7 +109,10 @@ jobs:
           exit 1
 
       - name: Click Stage 1, train critic and train Adapter v2 through Chromium
-        run: python -u -m tests.cevc_adapter_v2_e2e_browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m tests.cevc_adapter_v2_e2e_browser 2>&1 | tee /tmp/cevc_adapter_v2_e2e_browser.log
 
       - name: Reject hidden server tracebacks
         if: always()
@@ -168,6 +171,7 @@ jobs:
           path: |
             /tmp/cevc_adapter_v2_e2e_fixture.log
             /tmp/cevc_adapter_v2_e2e_server.log
+            /tmp/cevc_adapter_v2_e2e_browser.log
             logs/cevc_e2e/cevc2b/experiment2b_manifest.json
             logs/cevc_e2e/cevc2b/real_profile/*.json
             logs/cevc_e2e/cevc2b/critic/*.json
