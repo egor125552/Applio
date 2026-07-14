@@ -33,6 +33,7 @@ jobs:
       GRADIO_ANALYTICS_ENABLED: "False"
       OMP_NUM_THREADS: "2"
       MKL_NUM_THREADS: "2"
+      PYTHONPATH: "."
     steps:
       - uses: actions/checkout@v4
 
