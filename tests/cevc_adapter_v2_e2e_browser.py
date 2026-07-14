@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT = ROOT / "logs" / "cevc_e2e"
 PORT = int(os.environ.get("CEVC_E2E_PORT", "7867"))
 URL = f"http://127.0.0.1:{PORT}"
+EXPECTED_CLEAN_TRAIN_SLICES = 8
+EXPECTED_EPOCHS = 30
+MINIMUM_OPTIMIZER_STEPS = 20
 
 
 def _assert_training_artifacts() -> None:
@@ -33,28 +36,40 @@ def _assert_training_artifacts() -> None:
     history = json.loads(history_path.read_text(encoding="utf-8"))
     if summary.get("format") != "cevc-adapter-v2-human-summary-v1":
         raise AssertionError(f"Unexpected summary format: {summary.get('format')}")
-    if not history:
-        raise AssertionError("Adapter v2 history is empty")
+    if len(history) != EXPECTED_EPOCHS:
+        raise AssertionError(
+            f"Adapter v2 completed {len(history)} epochs; expected {EXPECTED_EPOCHS}"
+        )
 
     batch_size = int(summary["settings"]["batch_size"])
-    clean_train = 8
-    optimizer_steps = len(history) * math.ceil(clean_train / batch_size)
-    if optimizer_steps < 20:
+    batches_per_epoch = math.ceil(EXPECTED_CLEAN_TRAIN_SLICES / batch_size)
+    optimizer_steps = len(history) * batches_per_epoch
+    if optimizer_steps < MINIMUM_OPTIMIZER_STEPS:
         raise AssertionError(
-            f"E2E training executed only {optimizer_steps} optimizer steps; need at least 20"
+            f"E2E training executed only {optimizer_steps} optimizer steps; "
+            f"need at least {MINIMUM_OPTIMIZER_STEPS}"
         )
     if not all(math.isfinite(float(item["train_loss"])) for item in history):
         raise AssertionError("Adapter v2 history contains a non-finite train loss")
     if not summary.get("training_policy", {}).get("uses_prior_latent_like_inference"):
         raise AssertionError("Summary does not confirm the production prior-latent path")
 
+    batch_selection = summary.get("batch_selection", {})
+    if batch_selection.get("selection_device") != "cpu":
+        raise AssertionError(f"Unexpected E2E selection device: {batch_selection}")
+    if batch_selection.get("automatic_gpu_probe") is not False:
+        raise AssertionError(f"CPU E2E incorrectly claims a GPU probe: {batch_selection}")
+
     report = {
-        "format": "cevc-adapter-v2-browser-e2e-v1",
+        "format": "cevc-adapter-v2-browser-e2e-v2",
         "browser": "chromium",
         "public_fixture": "openai/whisper tests/jfk.flac",
         "completed_epochs": len(history),
         "batch_size": batch_size,
-        "estimated_optimizer_steps": optimizer_steps,
+        "batches_per_epoch": batches_per_epoch,
+        "optimizer_steps_completed": optimizer_steps,
+        "minimum_required_optimizer_steps": MINIMUM_OPTIMIZER_STEPS,
+        "production_prior_latent_path": True,
         "summary": str(summary_path),
         "history": str(history_path),
         "best_checkpoint": str(best_path),
@@ -93,8 +108,9 @@ def main() -> None:
         manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
         if manifest_payload.get("synthetic_audio_targets") is not False:
             raise AssertionError("Stage 1 enabled synthetic audio targets")
-        if manifest_payload.get("split_counts", {}).get("train", {}).get("clean") != 8:
-            raise AssertionError("Unexpected clean training split in Stage 1")
+        clean_train = manifest_payload.get("split_counts", {}).get("train", {}).get("clean")
+        if clean_train != EXPECTED_CLEAN_TRAIN_SLICES:
+            raise AssertionError(f"Unexpected clean training split: {clean_train}")
 
         page.get_by_role("button", name="Проверить готовность к Adapter v2").click()
         ready_status = page.get_by_label("Готовность к обучению")
