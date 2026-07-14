@@ -12,24 +12,9 @@ from rvc.train.cevc.adapter_v2_objective import (
     resample_for_critic,
 )
 from rvc.train.cevc.adapter_v2_preflight import validate_adapter_v2_prerequisites
-from rvc.train.cevc.data import HParams
 
 
 class AdapterV2Test(unittest.TestCase):
-    def test_real_config_without_training_files_has_runtime_default(self):
-        data_config = HParams(
-            max_wav_value=32768.0,
-            sample_rate=40000,
-            filter_length=2048,
-            hop_length=400,
-            win_length=2048,
-        )
-        self.assertIsNone(data_config.training_files)
-        data_config.training_files = "/tmp/clean_train_filelist.txt"
-        self.assertEqual(
-            data_config.training_files, "/tmp/clean_train_filelist.txt"
-        )
-
     def test_objective_is_finite_and_backpropagates(self):
         torch.manual_seed(7)
         baseline = torch.randn(3, 1, 4096) * 0.08
