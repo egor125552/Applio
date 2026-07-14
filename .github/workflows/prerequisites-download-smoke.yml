@@ -7,6 +7,10 @@ on:
     paths:
       - "rvc/lib/tools/prerequisites_download.py"
       - ".github/workflows/prerequisites-download-smoke.yml"
+  pull_request:
+    paths:
+      - "rvc/lib/tools/prerequisites_download.py"
+      - ".github/workflows/prerequisites-download-smoke.yml"
   workflow_dispatch:
 
 permissions:
