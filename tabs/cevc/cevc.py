@@ -146,7 +146,7 @@ def _run_ab(
     sid,
 ):
     if not terms_accepted:
-        return "You must agree to the Terms of Use to proceed.", None, None, None
+        return "You must agree to the Terms of Use to proceed.", None, None, None, None
     try:
         from rvc.infer.cevc import prepare_cevc_converter
         from rvc.infer.cevc_ab_runtime import convert_cevc_ab
@@ -201,10 +201,10 @@ def _run_ab(
             f"Adapter: {resolved_adapter}; epoch={payload.get('epoch')}; "
             f"parameters={parameters:,}. Report: {report_path}"
         )
-        return status, zero_path, half_path, full_path
+        return status, zero_path, half_path, full_path, report_path
     except Exception as error:
         traceback.print_exc()
-        return f"CEVC A/B failed: {error}", None, None, None
+        return f"CEVC A/B failed: {error}", None, None, None, None
 
 
 def cevc_tab():
@@ -286,6 +286,10 @@ def cevc_tab():
         output_zero = gr.Audio(label="Roughness 0.0 — baseline")
         output_half = gr.Audio(label="Roughness 0.5")
         output_full = gr.Audio(label="Roughness 1.0")
+    report_file = gr.File(
+        label="A/B diagnostic report (.json)",
+        interactive=False,
+    )
 
     run_button.click(
         _run_ab,
@@ -302,5 +306,5 @@ def cevc_tab():
             split_audio,
             sid,
         ],
-        outputs=[status, output_zero, output_half, output_full],
+        outputs=[status, output_zero, output_half, output_full, report_file],
     )
