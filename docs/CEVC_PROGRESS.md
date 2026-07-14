@@ -62,10 +62,29 @@ This checklist records completed engineering steps separately from the long-form
 - [x] Add data validation and adapter-only training buttons without a second model selector.
 - [x] Add a clean CEVC Adapter Colab notebook and standalone module/integration/notebook tests.
 - [x] Pass the expanded CEVC GitHub Actions job (`29283738664`).
-- [ ] Run the first real adapter training on the uploaded clean/rough/mixed recordings.
-- [ ] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` A/B controls in inference.
+- [x] Run the first real adapter extraction/training on the uploaded clean/rough/mixed recordings.
+- [x] Expose adapter loading and `roughness = 0.0 / 0.5 / 1.0` deterministic A/B controls in inference.
+- [ ] Run and listen to the first real three-output A/B conversion on Tesla T4.
 - [ ] Add audio and metric comparison against the baseline.
+
+### First real adapter training result
+
+- Dataset: 170 slices from clean, rough and mixed recordings; 7 minutes 20 seconds total source audio.
+- Environment: Google Colab Tesla T4.
+- Adapter: 60,160 trainable parameters; the base RVC network remained frozen.
+- Settings: 20 epochs, batch size 32, 6 batches per epoch, 120 optimizer steps.
+- Runtime: 2 minutes 7 seconds.
+- Best checkpoint: epoch 18, loss `0.52470`.
+- Export: `logs/egor/egor.cevc.pth`, with an identical copy at `logs/egor/cevc/roughness_adapter_best.pth`.
+
+### Deterministic inference path
+
+- A dedicated `CEVC A/B` tab loads the normal exported RVC model and a separate `.cevc.pth` adapter.
+- One click produces roughness `0.0`, `0.5` and `1.0` WAV files.
+- Every variant resets the same random seed, so stochastic RVC sampling is not confused with the adapter effect.
+- Roughness `0.0` bypasses expressive conditioning and remains the baseline identity path.
+- Inference helper tests and the complete CEVC job passed in GitHub Actions run `29326117722`.
 
 ## Current gate
 
-Experiment 1 is closed. Experiment 2 now has a repository-tested engineering path for source-label preservation, expressive extraction, frozen-base adapter training, separate checkpoints, and a Train UI that reuses the current experiment settings. The expanded GitHub Actions suite passes. The next gate is one real Tesla T4 extraction/training run before inference controls and acoustic claims are closed.
+Experiment 1 is closed. Experiment 2 has completed its first real extraction and training run, and the deterministic A/B inference path is implemented and repository-tested. The next gate is a real Colab A/B conversion using an unseen test phrase, followed by listening and objective audio comparison before increasing adapter capacity or training duration.
