@@ -18,7 +18,13 @@ from rvc.lib.algorithm.cevc.roughness_critic import (
 )
 
 
-REAL_TARGETS = {"clean": (0.05, 0), "mixed": (0.50, 1), "rough": (0.95, 2)}
+# Mixed contains real clean-to-rough transitions. It remains a supervised class,
+# but it is deliberately not assigned a fabricated scalar roughness target.
+CLASS_SPECS = {
+    "clean": {"score_target": 0.05, "class_id": 0, "score_anchor": True},
+    "mixed": {"score_target": 0.50, "class_id": 1, "score_anchor": False},
+    "rough": {"score_target": 0.95, "class_id": 2, "score_anchor": True},
+}
 CLASS_NAMES = {0: "clean", 1: "mixed", 2: "rough"}
 
 
@@ -34,7 +40,9 @@ def _augment_audio(audio, sample_rate, seed):
     tilt_db_per_octave = float(rng.uniform(-2.5, 2.5))
     octave = np.log2(np.maximum(frequencies, 80.0) / 1000.0)
     gain_db = np.clip(tilt_db_per_octave * octave, -5.0, 5.0)
-    output = np.fft.irfft(spectrum * np.power(10.0, gain_db / 20.0), n=output.size)
+    output = np.fft.irfft(
+        spectrum * np.power(10.0, gain_db / 20.0), n=output.size
+    )
 
     rms = float(np.sqrt(np.mean(output * output) + 1e-12))
     snr_db = float(rng.uniform(32.0, 48.0))
@@ -68,7 +76,9 @@ def _read_audio(path, sample_count, seed, random_crop, augment):
     if audio.size > sample_count:
         if random_crop:
             start = int(
-                np.random.default_rng(seed).integers(0, audio.size - sample_count + 1)
+                np.random.default_rng(seed).integers(
+                    0, audio.size - sample_count + 1
+                )
             )
         else:
             start = (audio.size - sample_count) // 2
@@ -83,7 +93,9 @@ def _load_manifest(experiment_dir):
     experiment = Path(experiment_dir).expanduser().resolve()
     path = experiment / "cevc2b" / "experiment2b_manifest.json"
     if not path.is_file():
-        raise FileNotFoundError("Prepare CEVC Experiment 2B before training the critic")
+        raise FileNotFoundError(
+            "Prepare CEVC Experiment 2B before training the critic"
+        )
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("training_policy") != "real_audio_only":
         raise ValueError("Refusing to train critic from synthetic-audio targets")
@@ -100,19 +112,26 @@ def _datasets(experiment, manifest):
     for item in manifest.get("split_records", []):
         label = item.get("label_hint")
         split = item.get("split")
-        if label not in REAL_TARGETS or split not in datasets:
+        if label not in CLASS_SPECS or split not in datasets:
             continue
-        target, class_id = REAL_TARGETS[label]
+        spec = CLASS_SPECS[label]
         path = experiment / "sliced_audios_16k" / item["file"]
         if not path.is_file():
             raise FileNotFoundError(f"Missing real critic training slice: {path}")
-        datasets[split][class_id].append(
-            {"path": str(path), "target": target, "class_id": class_id}
+        datasets[split][spec["class_id"]].append(
+            {
+                "path": str(path),
+                "target": float(spec["score_target"]),
+                "class_id": int(spec["class_id"]),
+                "score_anchor": bool(spec["score_anchor"]),
+            }
         )
     for split in datasets:
         for class_id, entries in datasets[split].items():
             if not entries:
-                raise ValueError(f"Critic {split} split has no {CLASS_NAMES[class_id]} slices")
+                raise ValueError(
+                    f"Critic {split} split has no {CLASS_NAMES[class_id]} slices"
+                )
     return datasets
 
 
@@ -140,19 +159,33 @@ def _balanced_batch(class_entries, batch_size, sample_count, seed, device):
     ).to(device)
     targets = torch.tensor([item["target"] for item in selected], device=device)
     classes = torch.tensor([item["class_id"] for item in selected], device=device)
-    return waves, targets, classes
-
-
-def _ordinal_loss(scores, classes, margin=0.12):
-    means = []
-    for class_id in range(3):
-        mask = classes == class_id
-        if not torch.any(mask):
-            return scores.new_tensor(0.0)
-        means.append(scores[mask].mean())
-    return F.relu(margin - (means[1] - means[0])) + F.relu(
-        margin - (means[2] - means[1])
+    anchor_mask = torch.tensor(
+        [item["score_anchor"] for item in selected],
+        dtype=torch.bool,
+        device=device,
     )
+    return waves, targets, classes, anchor_mask
+
+
+def _anchor_score_loss(score_logits, targets, anchor_mask):
+    """Fit scalar roughness only to reliable clean and rough anchors."""
+
+    if not torch.any(anchor_mask):
+        return score_logits.new_tensor(0.0)
+    return F.binary_cross_entropy_with_logits(
+        score_logits[anchor_mask], targets[anchor_mask]
+    )
+
+
+def _anchor_ranking_loss(scores, classes, margin=0.35):
+    """Require every real rough example to score above every real clean one."""
+
+    clean = scores[classes == 0]
+    rough = scores[classes == 2]
+    if clean.numel() == 0 or rough.numel() == 0:
+        return scores.new_tensor(0.0)
+    differences = rough[:, None] - clean[None, :]
+    return F.relu(float(margin) - differences).mean()
 
 
 def _evaluate(model, class_entries, sample_count, batch_size, device, seed):
@@ -161,7 +194,12 @@ def _evaluate(model, class_entries, sample_count, batch_size, device, seed):
     all_targets = []
     all_predictions = []
     all_classes = []
-    flat = [item for class_id in sorted(class_entries) for item in class_entries[class_id]]
+    all_anchor_masks = []
+    flat = [
+        item
+        for class_id in sorted(class_entries)
+        for item in class_entries[class_id]
+    ]
     with torch.no_grad():
         for start in range(0, len(flat), int(batch_size)):
             selected = flat[start : start + int(batch_size)]
@@ -177,32 +215,53 @@ def _evaluate(model, class_entries, sample_count, batch_size, device, seed):
                     for index, item in enumerate(selected)
                 ]
             ).to(device)
-            targets = torch.tensor([item["target"] for item in selected], device=device)
-            classes = torch.tensor([item["class_id"] for item in selected], device=device)
+            targets = torch.tensor(
+                [item["target"] for item in selected], device=device
+            )
+            classes = torch.tensor(
+                [item["class_id"] for item in selected], device=device
+            )
+            anchor_masks = torch.tensor(
+                [item["score_anchor"] for item in selected],
+                dtype=torch.bool,
+                device=device,
+            )
             output = model(waves)
             all_scores.append(output["score"].cpu())
             all_targets.append(targets.cpu())
             all_predictions.append(output["class_logits"].argmax(dim=1).cpu())
             all_classes.append(classes.cpu())
+            all_anchor_masks.append(anchor_masks.cpu())
 
     scores = torch.cat(all_scores)
     targets = torch.cat(all_targets)
     predictions = torch.cat(all_predictions)
     classes = torch.cat(all_classes)
+    anchor_masks = torch.cat(all_anchor_masks)
     means = {
         CLASS_NAMES[class_id]: float(scores[classes == class_id].mean())
         for class_id in range(3)
     }
-    margin_clean_mixed = means["mixed"] - means["clean"]
-    margin_mixed_rough = means["rough"] - means["mixed"]
-    ordered = float(margin_clean_mixed > 0.0 and margin_mixed_rough > 0.0)
+    clean_to_rough_margin = means["rough"] - means["clean"]
+    mixed_between = float(
+        means["clean"] <= means["mixed"] <= means["rough"]
+    )
+    anchor_mae = float(
+        torch.mean(torch.abs(scores[anchor_masks] - targets[anchor_masks]))
+    )
     return {
-        "real_score_mae": float(torch.mean(torch.abs(scores - targets))),
-        "class_accuracy": float(torch.mean((predictions == classes).float())),
+        "anchor_score_mae": anchor_mae,
+        # Retained for older readers of critic_history.json.
+        "real_score_mae": anchor_mae,
+        "class_accuracy": float(
+            torch.mean((predictions == classes).float())
+        ),
         "class_mean_scores": means,
-        "class_ordered": ordered,
-        "clean_to_mixed_margin": margin_clean_mixed,
-        "mixed_to_rough_margin": margin_mixed_rough,
+        "anchor_ordered": float(clean_to_rough_margin > 0.0),
+        "clean_to_rough_margin": clean_to_rough_margin,
+        "mixed_between_anchors": mixed_between,
+        "mixed_minus_clean_margin": means["mixed"] - means["clean"],
+        "rough_minus_mixed_margin": means["rough"] - means["mixed"],
     }
 
 
@@ -219,7 +278,9 @@ def train_roughness_critic(
 ):
     experiment, manifest_path, manifest = _load_manifest(experiment_dir)
     datasets = _datasets(experiment, manifest)
-    device = torch.device(device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(
+        device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    )
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -245,7 +306,7 @@ def train_roughness_critic(
         model.train()
         losses = []
         for step in range(steps):
-            waves, targets, classes = _balanced_batch(
+            waves, targets, classes, anchor_mask = _balanced_batch(
                 datasets["train"],
                 int(batch_size),
                 sample_count,
@@ -253,12 +314,14 @@ def train_roughness_critic(
                 device,
             )
             output = model(waves)
-            score_loss = F.binary_cross_entropy_with_logits(
-                output["score_logit"], targets
+            score_loss = _anchor_score_loss(
+                output["score_logit"], targets, anchor_mask
             )
             class_loss = F.cross_entropy(output["class_logits"], classes)
-            ordinal = _ordinal_loss(output["score"], classes)
-            loss = score_loss + 0.6 * class_loss + 0.8 * ordinal
+            anchor_ranking = _anchor_ranking_loss(
+                output["score"], classes, margin=0.35
+            )
+            loss = score_loss + 0.6 * class_loss + 1.0 * anchor_ranking
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -273,12 +336,13 @@ def train_roughness_critic(
             device,
             int(seed),
         )
-        margin_penalty = max(0.0, 0.10 - validation["clean_to_mixed_margin"])
-        margin_penalty += max(0.0, 0.10 - validation["mixed_to_rough_margin"])
+        margin_penalty = max(
+            0.0, 0.35 - validation["clean_to_rough_margin"]
+        )
         quality = (
-            validation["real_score_mae"]
+            validation["anchor_score_mae"]
             + 0.35 * (1.0 - validation["class_accuracy"])
-            + 0.5 * (1.0 - validation["class_ordered"])
+            + 0.5 * (1.0 - validation["anchor_ordered"])
             + margin_penalty
         )
         record = {
@@ -289,7 +353,7 @@ def train_roughness_critic(
         }
         history.append(record)
         payload = {
-            "format": "cevc-roughness-critic-v2-real-only",
+            "format": "cevc-roughness-critic-v3-clean-rough-anchors",
             "epoch": epoch,
             "state_dict": model.state_dict(),
             "model_config": {"hidden_channels": int(hidden_channels)},
@@ -297,12 +361,13 @@ def train_roughness_critic(
             "crop_samples": sample_count,
             "parameters": critic_parameter_count(model),
             "metrics": record,
-            "training_policy": "real_audio_only",
+            "training_policy": "real_audio_only_clean_rough_score_anchors",
+            "mixed_policy": "real_class_only_no_fixed_scalar_target",
             "augmentation_policy": "class_independent_gain_eq_noise_polarity",
             "source_manifest": str(manifest_path),
-            "real_roughness_profile": manifest.get("real_roughness_profile", {}).get(
-                "profile_npz"
-            ),
+            "real_roughness_profile": manifest.get(
+                "real_roughness_profile", {}
+            ).get("profile_npz"),
         }
         if quality < best_quality:
             best_quality = quality
@@ -312,9 +377,11 @@ def train_roughness_critic(
             json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(
-            f"CEVC real critic epoch {epoch}/{epochs}: "
-            f"loss={record['train_loss']:.4f}, mae={record['real_score_mae']:.4f}, "
-            f"ordered={record['class_ordered']:.0f}, acc={record['class_accuracy']:.3f}, "
+            f"CEVC anchor critic epoch {epoch}/{epochs}: "
+            f"loss={record['train_loss']:.4f}, "
+            f"anchor_mae={record['anchor_score_mae']:.4f}, "
+            f"clean_to_rough={record['clean_to_rough_margin']:.3f}, "
+            f"acc={record['class_accuracy']:.3f}, "
             f"means={record['class_mean_scores']}"
         )
 
@@ -326,5 +393,5 @@ def train_roughness_critic(
         "parameters": critic_parameter_count(model),
         "last_metrics": history[-1],
         "device": str(device),
-        "training_policy": "real_audio_only",
+        "training_policy": "real_audio_only_clean_rough_score_anchors",
     }
