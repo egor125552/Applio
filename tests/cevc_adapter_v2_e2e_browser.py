@@ -24,7 +24,7 @@ MINIMUM_OPTIMIZER_STEPS = 20
 
 
 def _set_gradio_value(page, label: str, value) -> None:
-    """Change a Gradio range/number input exactly as a browser user would."""
+    """Change a visible Gradio range/number input through browser events."""
 
     control = page.get_by_label(label, exact=True)
     expect(control).to_be_visible(timeout=30_000)
@@ -168,8 +168,15 @@ def main() -> None:
         if clean_train != EXPECTED_CLEAN_TRAIN_SLICES:
             raise AssertionError(f"Unexpected clean training split: {clean_train}")
 
-        # Change the same controls a user changes in Gradio. Batch 8 gives three
-        # real optimizer steps per epoch, for 300 critic steps in this E2E run.
+        # Open the same collapsed settings section a user must open before changing
+        # critic controls. Direct function tests cannot catch this UI requirement.
+        critic_settings = page.get_by_text(
+            "Дополнительные настройки critic", exact=True
+        ).first
+        expect(critic_settings).to_be_visible(timeout=30_000)
+        critic_settings.click()
+
+        # Batch 8 gives three real optimizer steps per epoch, for 300 critic steps.
         _set_gradio_value(page, "Количество эпох обучения critic", EXPECTED_CRITIC_EPOCHS)
         _set_gradio_value(page, "Размер батча", EXPECTED_CRITIC_BATCH)
         _set_gradio_value(page, "Скорость обучения", 0.0005)
