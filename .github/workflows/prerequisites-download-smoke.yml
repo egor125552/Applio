@@ -75,6 +75,9 @@ jobs:
           print("Full Colab dependency import smoke passed.")
           PY
 
+      - name: Prepare application config
+        run: cp -n assets/config_template.json assets/config.json
+
       - name: Import CEVC tab module
         run: |
           python -u - <<'PY'
