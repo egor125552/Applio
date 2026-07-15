@@ -9,6 +9,7 @@ on:
       - "seed_vc_colab/**"
       - ".github/workflows/seed-vc-colab-ci.yml"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "seed_vc_colab/**"
       - "ci-relay/aaja-audio-engine-trigger.txt"
