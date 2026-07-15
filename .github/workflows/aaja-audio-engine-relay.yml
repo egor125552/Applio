@@ -1,0 +1,102 @@
+name: Aaja Audio Engine Relay CI
+
+on:
+  pull_request:
+    paths:
+      - "ci-relay/aaja-audio-engine-trigger.txt"
+      - ".github/workflows/aaja-audio-engine-relay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aaja-audio-engine-relay-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Aaja engine branch
+        uses: actions/checkout@v4
+        with:
+          repository: egor125552/rust-Aaja-game-engine-web
+          ref: agent/audio-engine-v0.1
+          path: aaja
+
+      - name: Expand project payload
+        working-directory: aaja
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          chunks=(bootstrap/chunk-*)
+          if (( ${#chunks[@]} == 0 )); then
+            echo "Expected bootstrap payload was not found" >&2
+            exit 1
+          fi
+          cat "${chunks[@]}" | base64 --decode > "$RUNNER_TEMP/aaja-project.tar.gz"
+          tar -xzf "$RUNNER_TEMP/aaja-project.tar.gz" -C .
+          rm -rf bootstrap
+          test -f Cargo.toml
+          test -f package.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: aaja/package-lock.json
+
+      - name: Install JavaScript dependencies
+        working-directory: aaja
+        run: npm ci
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Rust formatting
+        working-directory: aaja
+        run: npm run format:rust
+
+      - name: Rust lint
+        working-directory: aaja
+        run: npm run lint:rust
+
+      - name: Unit tests
+        working-directory: aaja
+        run: npm test
+
+      - name: Production build
+        working-directory: aaja
+        run: npm run build
+
+      - name: Verify generated WASM
+        working-directory: aaja
+        run: |
+          test -s packages/engine/dist/wasm/audio_game_core_bg.wasm
+          npm run test:wasm
+
+      - name: Install browser runtimes
+        working-directory: aaja
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Browser smoke tests
+        working-directory: aaja
+        run: npm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aaja-audio-engine-${{ github.run_attempt }}
+          path: |
+            aaja/demo/dist
+            aaja/packages/engine/dist
+            aaja/playwright-report
+          if-no-files-found: warn
