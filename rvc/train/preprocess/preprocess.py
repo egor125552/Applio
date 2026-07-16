@@ -20,6 +20,7 @@ sys.path.append(now_directory)
 import logging
 
 from rvc.lib.utils import load_audio
+from rvc.train.extract.expressive import infer_label_hint
 from rvc.train.preprocess.slicer import Slicer
 
 logging.getLogger("numba.core.byteflow").setLevel(logging.WARNING)
@@ -33,6 +34,21 @@ ALPHA = 0.75
 HIGH_PASS_CUTOFF = 48
 SAMPLE_RATE_16K = 16000
 RES_TYPE = "soxr_vhq"
+SUPPORTED_AUDIO_EXTENSIONS = (
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".m4a",
+    ".mp4",
+    ".aac",
+    ".alac",
+    ".wma",
+    ".aiff",
+    ".webm",
+    ".ac3",
+)
 
 
 class PreProcess:
@@ -242,6 +258,30 @@ def save_dataset_duration(file_path, dataset_duration):
         json.dump(data, f, indent=4)
 
 
+def save_cevc_source_manifest(input_root: str, exp_dir: str, files: list):
+    """Preserve source file identities after Applio renames sliced audio."""
+
+    sources = []
+    for file_path, index, speaker_id in files:
+        filename = os.path.basename(file_path)
+        sources.append(
+            {
+                "index": int(index),
+                "speaker_id": int(speaker_id),
+                "filename": filename,
+                "relative_path": os.path.relpath(file_path, input_root),
+                "label_hint": infer_label_hint(filename),
+            }
+        )
+    payload = {"version": 1, "sources": sources}
+    with open(
+        os.path.join(exp_dir, "cevc_source_manifest.json"),
+        "w",
+        encoding="utf-8",
+    ) as destination:
+        json.dump(payload, destination, ensure_ascii=False, indent=2)
+
+
 def process_audio_wrapper(args):
     (
         pp,
@@ -300,13 +340,17 @@ def preprocess_training_set(
         try:
             sid = 0 if root == input_root else int(os.path.basename(root))
             for f in filenames:
-                if f.lower().endswith((".wav", ".mp3", ".flac", ".ogg")):
+                if f.startswith(".") or f.startswith("._"):
+                    continue
+                if f.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
                     files.append((os.path.join(root, f), idx, sid))
                     idx += 1
         except ValueError:
             print(
                 f'Speaker ID folder is expected to be integer, got "{os.path.basename(root)}" instead.'
             )
+
+    save_cevc_source_manifest(input_root, exp_dir, files)
 
     # print(f"Number of files: {len(files)}")
     if len(files) == 0:

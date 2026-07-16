@@ -5,6 +5,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
+from distutils.util import strtobool
 
 import numpy as np
 import torch
@@ -18,11 +19,30 @@ import rvc.lib.zluda
 from rvc.configs.config import Config
 from rvc.lib.predictors.f0 import CREPE, FCPE, RMVPE
 from rvc.lib.utils import load_audio_16k, load_embedding
+from rvc.train.extract.expressive import extract_expressive_dataset
 from rvc.train.extract.preparing_files import generate_config, generate_filelist
 
 # Load config
 config = Config()
 mp.set_start_method("spawn", force=True)
+
+MIN_PREDICTOR_BYTES = 1024 * 1024
+
+
+def _require_predictor_file(file_name):
+    path = os.path.join("rvc", "models", "predictors", file_name)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"Required pitch predictor is missing: {path}. "
+            "Run `python core.py prerequisites --models True "
+            "--pretraineds_hifigan True` and confirm the download completes."
+        )
+    size = os.path.getsize(path)
+    if size < MIN_PREDICTOR_BYTES:
+        raise RuntimeError(
+            f"Pitch predictor looks incomplete or corrupt: {path} "
+            f"({size} bytes). Delete it and rerun prerequisites."
+        )
 
 
 class FeatureInput:
@@ -40,13 +60,17 @@ class FeatureInput:
                 device=self.device, sample_rate=self.sample_rate, hop_size=self.hop_size
             )
         elif f0_method == "rmvpe":
+            _require_predictor_file("rmvpe.pt")
             self.model = RMVPE(
                 device=self.device, sample_rate=self.sample_rate, hop_size=self.hop_size
             )
         elif f0_method == "fcpe":
+            _require_predictor_file("fcpe.pt")
             self.model = FCPE(
                 device=self.device, sample_rate=self.sample_rate, hop_size=self.hop_size
             )
+        else:
+            raise ValueError(f"Unsupported F0 method: {f0_method}")
         self.f0_method = f0_method
 
     def compute_f0(self, x, p_len=None):
@@ -84,9 +108,9 @@ class FeatureInput:
             coarse_pit = self.coarse_f0(feature_pit)
             np.save(opt_path_coarse, coarse_pit, allow_pickle=False)
         except Exception as error:
-            print(
-                f"An error occurred extracting file {inp_path} on {self.device}: {error}"
-            )
+            raise RuntimeError(
+                f"Pitch extraction failed for {inp_path} on {self.device}: {error}"
+            ) from error
 
 
 def process_files(files, f0_method, device, threads):
@@ -95,6 +119,19 @@ def process_files(files, f0_method, device, threads):
         for file_info in files:
             fe.process_file(file_info)
             pbar.update(1)
+
+
+def _missing_pitch_outputs(files):
+    missing = []
+    for inp_path, coarse_path, full_path, _ in files:
+        absent = []
+        if not os.path.isfile(coarse_path):
+            absent.append(coarse_path)
+        if not os.path.isfile(full_path):
+            absent.append(full_path)
+        if absent:
+            missing.append((inp_path, absent))
+    return missing
 
 
 def run_pitch_extraction(files, devices, f0_method, threads):
@@ -109,13 +146,32 @@ def run_pitch_extraction(files, devices, f0_method, threads):
                 files[i :: len(devices)],
                 f0_method,
                 devices[i],
-                threads // len(devices),
+                max(1, threads // len(devices)),
             )
             for i in range(len(devices))
         ]
-        concurrent.futures.wait(tasks)
+        for task in tasks:
+            task.result()
 
-    print(f"Pitch extraction completed in {time.time() - start_time:.2f} seconds.")
+    missing = _missing_pitch_outputs(files)
+    if missing:
+        details = []
+        for input_path, absent_paths in missing[:10]:
+            details.append(
+                f"{os.path.basename(input_path)} -> "
+                + ", ".join(os.path.basename(path) for path in absent_paths)
+            )
+        suffix = "" if len(missing) <= 10 else f"; and {len(missing) - 10} more"
+        raise RuntimeError(
+            "Pitch extraction did not create all required F0 files: "
+            + "; ".join(details)
+            + suffix
+        )
+
+    print(
+        f"Pitch extraction completed for {len(files)} slices in "
+        f"{time.time() - start_time:.2f} seconds."
+    )
 
 
 def process_file_embedding(
@@ -137,12 +193,13 @@ def process_file_embedding(
         if not np.isnan(feats_out).any():
             np.save(out_file_path, feats_out, allow_pickle=False)
         else:
-            print(f"{wav_file_path} produced NaN values; skipping.")
+            raise RuntimeError(f"{wav_file_path} produced NaN embedding values")
 
     with tqdm.tqdm(total=len(files), leave=True, position=device_num) as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as executor:
             futures = [executor.submit(worker, f) for f in files]
-            for _ in concurrent.futures.as_completed(futures):
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
                 pbar.update(1)
 
 
@@ -163,13 +220,27 @@ def run_embedding_extraction(
                 embedder_model_custom,
                 i,
                 devices[i],
-                threads // len(devices),
+                max(1, threads // len(devices)),
             )
             for i in range(len(devices))
         ]
-        concurrent.futures.wait(tasks)
+        for task in tasks:
+            task.result()
 
-    print(f"Embedding extraction completed in {time.time() - start_time:.2f} seconds.")
+    missing = [
+        file_info[3] for file_info in files if not os.path.isfile(file_info[3])
+    ]
+    if missing:
+        sample = ", ".join(os.path.basename(path) for path in missing[:10])
+        suffix = "" if len(missing) <= 10 else f"; and {len(missing) - 10} more"
+        raise RuntimeError(
+            f"Embedding extraction did not create {len(missing)} files: {sample}{suffix}"
+        )
+
+    print(
+        f"Embedding extraction completed for {len(files)} slices in "
+        f"{time.time() - start_time:.2f} seconds."
+    )
 
 
 if __name__ == "__main__":
@@ -181,6 +252,7 @@ if __name__ == "__main__":
     embedder_model = sys.argv[6]
     embedder_model_custom = sys.argv[7] if len(sys.argv) > 7 else None
     include_mutes = int(sys.argv[8]) if len(sys.argv) > 8 else 2
+    extract_cevc = bool(strtobool(sys.argv[9])) if len(sys.argv) > 9 else False
 
     wav_path = os.path.join(exp_dir, "sliced_audios_16k")
 
@@ -227,6 +299,22 @@ if __name__ == "__main__":
     devices = ["cpu"] if gpus == "-" else [f"cuda:{idx}" for idx in gpus.split("-")]
 
     run_pitch_extraction(files, devices, f0_method, num_processes)
+
+    if extract_cevc:
+        print("Starting CEVC expressive feature extraction...")
+        cevc_manifest = extract_expressive_dataset(files, exp_dir)
+        data["cevc_expressive_features"] = {
+            "enabled": True,
+            "feature_dim": cevc_manifest["feature_dim"],
+            "feature_names": cevc_manifest["feature_names"],
+            "manifest": "cevc_expressive_manifest.json",
+        }
+        with open(file_path, "w", encoding="utf-8") as destination:
+            json.dump(data, destination, ensure_ascii=False, indent=4)
+        print(
+            "CEVC expressive feature extraction completed for "
+            f"{len(cevc_manifest['files'])} slices."
+        )
 
     run_embedding_extraction(
         files, devices, embedder_model, embedder_model_custom, num_processes

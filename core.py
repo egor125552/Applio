@@ -456,6 +456,7 @@ def run_extract_script(
     embedder_model: str,
     embedder_model_custom: str = None,
     include_mutes: int = 2,
+    extract_cevc_features: bool = True,
 ):
     model_path = os.path.join(logs_path, model_name)
     extract = os.path.join("rvc", "train", "extract", "extract.py")
@@ -474,6 +475,7 @@ def run_extract_script(
                 embedder_model,
                 embedder_model_custom,
                 include_mutes,
+                extract_cevc_features,
             ],
         ),
     ]
@@ -482,7 +484,62 @@ def run_extract_script(
     if result.returncode != 0:
         return f"Feature extraction failed for model {model_name}. Please check the console logs for more details."
 
-    return f"Model {model_name} extracted successfully."
+    cevc_note = (
+        " CEVC expressive features were also extracted."
+        if extract_cevc_features
+        else ""
+    )
+    return f"Model {model_name} extracted successfully.{cevc_note}"
+
+
+def _run_cevc_adapter_command(command: list[str], action: str) -> str:
+    result = subprocess.run(command, capture_output=True, text=True)
+    output = "\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+    )
+    if result.returncode != 0:
+        return f"{action} failed.\n{output}"
+    return output or f"{action} completed successfully."
+
+
+def run_cevc_adapter_check_script(model_name: str) -> str:
+    script = os.path.join("rvc", "train", "cevc", "train_adapter.py")
+    command = [python, script, "--model-name", str(model_name), "--validate-only"]
+    return _run_cevc_adapter_command(command, "CEVC data check")
+
+
+def run_cevc_adapter_train_script(
+    model_name: str,
+    total_epoch: int,
+    batch_size: int,
+    gpu: str,
+    sample_rate: int,
+    vocoder: str,
+    save_every_epoch: int,
+    checkpointing: bool = False,
+) -> str:
+    script = os.path.join("rvc", "train", "cevc", "train_adapter.py")
+    command = [
+        python,
+        script,
+        "--model-name",
+        str(model_name),
+        "--epochs",
+        str(total_epoch),
+        "--batch-size",
+        str(batch_size),
+        "--gpu",
+        str(gpu),
+        "--sample-rate",
+        str(sample_rate),
+        "--vocoder",
+        str(vocoder),
+        "--save-every",
+        str(save_every_epoch),
+    ]
+    if checkpointing:
+        command.append("--checkpointing")
+    return _run_cevc_adapter_command(command, "CEVC adapter training")
 
 
 def shutdown_after_training():

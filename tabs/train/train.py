@@ -8,6 +8,8 @@ import gradio as gr
 
 from assets.i18n.i18n import I18nAuto
 from core import (
+    run_cevc_adapter_check_script,
+    run_cevc_adapter_train_script,
     run_extract_script,
     run_index_script,
     run_preprocess_script,
@@ -586,6 +588,14 @@ def train_tab():
                     i18n("Move files to custom embedder folder")
                 )
 
+        extract_cevc_features = gr.Checkbox(
+            label=i18n("Extract CEVC expressive features"),
+            info=i18n(
+                "Also extract energy, spectral tilt, HNR, band aperiodicity, and F0 instability for Roughness Adapter training."
+            ),
+            value=True,
+            interactive=True,
+        )
         extract_output_info = gr.Textbox(
             label=i18n("Output Information"),
             info=i18n("The output information will be displayed here."),
@@ -605,6 +615,7 @@ def train_tab():
                 embedder_model,
                 embedder_model_custom,
                 include_mutes,
+                extract_cevc_features,
             ],
             outputs=[extract_output_info],
         )
@@ -780,6 +791,13 @@ def train_tab():
                 return message
             return run_train_script(*args)
 
+        def enforce_cevc_terms(terms_accepted, *args):
+            if not terms_accepted:
+                message = "You must agree to the Terms of Use to proceed."
+                gr.Info(message)
+                return message
+            return run_cevc_adapter_train_script(*args)
+
         terms_checkbox = gr.Checkbox(
             label=i18n("I agree to the terms of use"),
             info=i18n(
@@ -812,6 +830,24 @@ def train_tab():
                 inputs=[model_name, index_algorithm],
                 outputs=[train_output_info],
             )
+
+    # CEVC Roughness Adapter section. It deliberately reuses the currently
+    # selected experiment and training controls instead of duplicating them.
+    with gr.Accordion(i18n("CEVC Roughness Adapter"), open=False):
+        gr.Markdown(
+            i18n(
+                "Uses the Model Name, sampling rate, epochs, batch size, GPU, vocoder, save interval, and checkpointing options already selected above. Run Preprocess and Extract Features first."
+            )
+        )
+        with gr.Row():
+            cevc_check_button = gr.Button(i18n("Check CEVC Data"))
+            cevc_train_button = gr.Button(i18n("Train Roughness Adapter"))
+        cevc_output_info = gr.Textbox(
+            label=i18n("CEVC Output Information"),
+            value="",
+            max_lines=12,
+            interactive=False,
+        )
 
     # Export Model section
     with gr.Accordion(i18n("Export Model"), open=False):
@@ -1003,6 +1039,27 @@ def train_tab():
                 fn=toggle_visible,
                 inputs=[overtraining_detector],
                 outputs=[overtraining_settings],
+            )
+
+            cevc_check_button.click(
+                fn=run_cevc_adapter_check_script,
+                inputs=[model_name],
+                outputs=[cevc_output_info],
+            )
+            cevc_train_button.click(
+                fn=enforce_cevc_terms,
+                inputs=[
+                    terms_checkbox,
+                    model_name,
+                    total_epoch,
+                    batch_size,
+                    gpu,
+                    sampling_rate,
+                    vocoder,
+                    save_every_epoch,
+                    checkpointing,
+                ],
+                outputs=[cevc_output_info],
             )
 
             train_button.click(

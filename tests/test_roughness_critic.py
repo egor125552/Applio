@@ -1,0 +1,209 @@
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+import torch
+
+from rvc.lib.algorithm.cevc.roughness_critic import (
+    RoughnessCritic,
+    critic_parameter_count,
+)
+from rvc.train.cevc.experiment2b import prepare_experiment2b
+from rvc.train.cevc.train_critic import (
+    _anchor_ranking_loss,
+    _anchor_score_loss,
+    _gate_result,
+    train_roughness_critic,
+)
+
+
+class RoughnessCriticTest(unittest.TestCase):
+    def test_forward_backward_and_parameter_count(self):
+        model = RoughnessCritic(hidden_channels=32)
+        waveform = torch.randn(3, 3200, requires_grad=True)
+        output = model(waveform)
+        self.assertEqual(output["score"].shape, (3,))
+        self.assertEqual(output["class_logits"].shape, (3, 3))
+        self.assertGreater(critic_parameter_count(model), 10000)
+        loss = output["score"].mean() + output["class_logits"].square().mean()
+        loss.backward()
+        self.assertIsNotNone(waveform.grad)
+        self.assertTrue(torch.isfinite(waveform.grad).all())
+
+    def test_mixed_has_no_fabricated_scalar_target(self):
+        targets = torch.tensor([0.05, 0.50, 0.95])
+        anchors = torch.tensor([True, False, True])
+        first = _anchor_score_loss(
+            torch.tensor([-2.0, -20.0, 2.0]), targets, anchors
+        )
+        second = _anchor_score_loss(
+            torch.tensor([-2.0, 20.0, 2.0]), targets, anchors
+        )
+        self.assertAlmostEqual(float(first), float(second), places=7)
+
+    def test_anchor_ranking_uses_clean_and_rough_only(self):
+        classes = torch.tensor([0, 1, 2])
+        good = _anchor_ranking_loss(
+            torch.tensor([0.10, 0.99, 0.90]), classes, margin=0.35
+        )
+        bad = _anchor_ranking_loss(
+            torch.tensor([0.70, 0.01, 0.40]), classes, margin=0.35
+        )
+        self.assertEqual(float(good), 0.0)
+        self.assertGreater(float(bad), 0.0)
+
+    def test_gate_has_clear_pass_and_fail_results(self):
+        accepted = _gate_result(
+            {
+                "anchor_ordered": 1.0,
+                "clean_to_rough_margin": 0.66,
+                "anchor_score_mae": 0.13,
+                "class_accuracy": 0.76,
+            }
+        )
+        rejected = _gate_result(
+            {
+                "anchor_ordered": 1.0,
+                "clean_to_rough_margin": 0.10,
+                "anchor_score_mae": 0.30,
+                "class_accuracy": 0.40,
+            }
+        )
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["verdict"], "accepted_for_adapter_v2")
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["verdict"], "needs_retraining")
+
+    def test_one_epoch_real_only_training_writes_reports_and_clear_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            experiment = Path(directory)
+            audio_dir = experiment / "sliced_audios_16k"
+            expressive_dir = experiment / "expressive"
+            audio_dir.mkdir()
+            expressive_dir.mkdir()
+            records = []
+            sample_rate = 16000
+            time = np.arange(6400, dtype=np.float32) / sample_rate
+            for label, source_index, count, frequency in (
+                ("clean", 0, 6, 150),
+                ("mixed", 1, 6, 180),
+                ("rough", 2, 6, 210),
+            ):
+                for segment in range(count):
+                    name = f"0_{source_index}_{segment}.wav"
+                    base = 0.12 * np.sin(2 * np.pi * frequency * time)
+                    base += 0.03 * np.sin(2 * np.pi * frequency * 2 * time)
+                    if label == "mixed":
+                        base += 0.007 * np.random.default_rng(
+                            segment
+                        ).standard_normal(time.size)
+                        base += 0.01 * np.sin(
+                            2 * np.pi * frequency * 0.5 * time
+                        )
+                    if label == "rough":
+                        base += 0.018 * np.random.default_rng(
+                            segment + 100
+                        ).standard_normal(time.size)
+                        base += 0.025 * np.sin(
+                            2 * np.pi * frequency * 0.5 * time
+                        )
+                    sf.write(
+                        audio_dir / name,
+                        base.astype(np.float32),
+                        sample_rate,
+                        subtype="FLOAT",
+                    )
+                    center = {
+                        "clean": np.array([0.0, 1.0, 1.0, -0.8, -0.5]),
+                        "mixed": np.array([0.1, 0.1, 0.0, 0.1, 0.2]),
+                        "rough": np.array([0.2, -0.8, -1.0, 1.0, 1.0]),
+                    }[label]
+                    features = np.tile(center.astype(np.float32), (40, 1))
+                    np.save(
+                        expressive_dir / f"{name}.npy",
+                        features,
+                        allow_pickle=False,
+                    )
+                    records.append(
+                        {
+                            "file": name,
+                            "source_index": source_index,
+                            "source_filename": f"{label}.wav",
+                            "label_hint": label,
+                            "frames": 40,
+                        }
+                    )
+            (experiment / "cevc_expressive_manifest.json").write_text(
+                json.dumps({"files": records}), encoding="utf-8"
+            )
+            prepared = prepare_experiment2b(
+                experiment, validation_fraction=0.25, seed=12
+            )
+            self.assertFalse(prepared["synthetic_audio_targets"])
+
+            console = io.StringIO()
+            with redirect_stdout(console):
+                result = train_roughness_critic(
+                    experiment,
+                    epochs=1,
+                    batch_size=6,
+                    learning_rate=0.0005,
+                    crop_seconds=0.25,
+                    hidden_channels=32,
+                    seed=12,
+                    device="cpu",
+                )
+
+            output = console.getvalue()
+            self.assertIn("Шаг 1 из 4", output)
+            self.assertIn("Шаг 4 из 4", output)
+            self.assertIn("Короткий отчёт для передачи", output)
+            self.assertNotIn("means={", output)
+            self.assertNotIn("class_mean_scores", output)
+
+            self.assertEqual(
+                result["training_policy"],
+                "real_audio_only_clean_rough_score_anchors",
+            )
+            self.assertTrue(Path(result["best_checkpoint"]).is_file())
+            self.assertTrue(Path(result["final_checkpoint"]).is_file())
+            self.assertTrue(Path(result["history_path"]).is_file())
+            self.assertTrue(Path(result["summary_path"]).is_file())
+
+            summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(summary["format"], "cevc-critic-human-summary-v1")
+            self.assertIn("accepted_for_adapter_v2", summary)
+            self.assertIn("explanation_ru", summary)
+            self.assertIn("next_step_ru", summary)
+            self.assertIn("best_metrics", summary)
+            self.assertIn("gate", summary)
+
+            payload = torch.load(
+                result["best_checkpoint"], map_location="cpu", weights_only=False
+            )
+            self.assertEqual(
+                payload["format"],
+                "cevc-roughness-critic-v3-clean-rough-anchors",
+            )
+            self.assertEqual(
+                payload["training_policy"],
+                "real_audio_only_clean_rough_score_anchors",
+            )
+            self.assertEqual(
+                payload["mixed_policy"],
+                "real_class_only_no_fixed_scalar_target",
+            )
+            self.assertEqual(payload["epoch"], 1)
+            self.assertIn("class_mean_scores", payload["metrics"])
+            self.assertIn("anchor_ordered", payload["metrics"])
+            self.assertIn("clean_to_rough_margin", payload["metrics"])
+            self.assertNotIn("pair_monotonic_rate", payload["metrics"])
+
+
+if __name__ == "__main__":
+    unittest.main()

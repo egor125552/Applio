@@ -1,0 +1,133 @@
+name: Publish prerequisite mirror
+
+on:
+  push:
+    branches:
+      - agent/compact-expressive-vc-architecture
+    paths:
+      - ".github/workflows/publish-prerequisite-mirror.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/publish-prerequisite-mirror.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: cevc-prerequisites-v1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install downloader dependencies
+        run: python -m pip install huggingface_hub requests tqdm
+
+      - name: Download and verify all prerequisites
+        run: |
+          python -u - <<'PY'
+          from rvc.lib.tools.prerequisites_download import prequisites_download_pipeline
+
+          prequisites_download_pipeline(
+              pretraineds_hifigan=True,
+              models=True,
+              exe=False,
+          )
+          PY
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          cp rvc/models/predictors/rmvpe.pt release-assets/predictors-rmvpe.pt
+          cp rvc/models/predictors/fcpe.pt release-assets/predictors-fcpe.pt
+          cp rvc/models/embedders/contentvec/pytorch_model.bin release-assets/contentvec-pytorch_model.bin
+          cp rvc/models/embedders/contentvec/config.json release-assets/contentvec-config.json
+
+          cp rvc/models/pretraineds/hifi-gan/f0D32k.pth release-assets/hifigan-f0D32k.pth
+          cp rvc/models/pretraineds/hifi-gan/f0D40k.pth release-assets/hifigan-f0D40k.pth
+          cp rvc/models/pretraineds/hifi-gan/f0D48k.pth release-assets/hifigan-f0D48k.pth
+          cp rvc/models/pretraineds/hifi-gan/f0G32k.pth release-assets/hifigan-f0G32k.pth
+          cp rvc/models/pretraineds/hifi-gan/f0G40k.pth release-assets/hifigan-f0G40k.pth
+          cp rvc/models/pretraineds/hifi-gan/f0G48k.pth release-assets/hifigan-f0G48k.pth
+
+          cp rvc/models/pretraineds/refinegan/f0D24k.pth release-assets/refinegan-f0D24k.pth
+          cp rvc/models/pretraineds/refinegan/f0G24k.pth release-assets/refinegan-f0G24k.pth
+          cp rvc/models/pretraineds/refinegan/f0D32k.pth release-assets/refinegan-f0D32k.pth
+          cp rvc/models/pretraineds/refinegan/f0G32k.pth release-assets/refinegan-f0G32k.pth
+
+          sha256sum release-assets/* | tee release-assets/SHA256SUMS.txt
+
+      - name: Create or update public mirror release
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "CEVC prerequisite mirror v1" \
+              --notes "Verified mirror of public Applio prerequisite files for Colab sessions affected by Hugging Face Xet CDN 403 errors."
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+      - name: Verify public assets are reachable
+        run: |
+          for asset in release-assets/*; do
+            name="$(basename "$asset")"
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${name}"
+            curl --fail --location --silent --show-error --range 0-0 "$url" >/dev/null
+            echo "Reachable: $name"
+          done
+
+  verify-public-mirror:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RELEASE_TAG: cevc-prerequisites-v1
+    steps:
+      - name: Wait for and verify every public mirror asset
+        run: |
+          assets=(
+            predictors-rmvpe.pt
+            predictors-fcpe.pt
+            contentvec-pytorch_model.bin
+            contentvec-config.json
+            hifigan-f0D32k.pth
+            hifigan-f0D40k.pth
+            hifigan-f0D48k.pth
+            hifigan-f0G32k.pth
+            hifigan-f0G40k.pth
+            hifigan-f0G48k.pth
+            refinegan-f0D24k.pth
+            refinegan-f0G24k.pth
+            refinegan-f0D32k.pth
+            refinegan-f0G32k.pth
+            SHA256SUMS.txt
+          )
+
+          for attempt in $(seq 1 60); do
+            ready=true
+            for name in "${assets[@]}"; do
+              url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${name}"
+              if ! curl --fail --location --silent --show-error --range 0-0 "$url" >/dev/null 2>&1; then
+                ready=false
+                echo "Mirror not ready yet (${attempt}/60): ${name}"
+                break
+              fi
+            done
+            if [ "$ready" = true ]; then
+              printf '%s\n' "${assets[@]}" | sed 's/^/Reachable: /'
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Public prerequisite mirror did not become ready in time."
+          exit 1

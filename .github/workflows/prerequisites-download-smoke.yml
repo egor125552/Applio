@@ -1,0 +1,348 @@
+name: Prerequisite download smoke
+
+on:
+  push:
+    branches:
+      - agent/compact-expressive-vc-architecture
+    paths:
+      - "app.py"
+      - "requirements.txt"
+      - "tabs/cevc/**"
+      - "tabs/cevc2b/**"
+      - "rvc/infer/cevc.py"
+      - "rvc/infer/cevc_conditioning.py"
+      - "rvc/train/cevc/**"
+      - "rvc/lib/tools/prerequisites_download.py"
+      - ".github/workflows/prerequisites-download-smoke.yml"
+  pull_request:
+    paths:
+      - "app.py"
+      - "requirements.txt"
+      - "tabs/cevc/**"
+      - "tabs/cevc2b/**"
+      - "rvc/infer/cevc.py"
+      - "rvc/infer/cevc_conditioning.py"
+      - "rvc/train/cevc/**"
+      - "rvc/lib/tools/prerequisites_download.py"
+      - ".github/workflows/prerequisites-download-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-colab-dependency-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install full Applio requirements exactly like Colab
+        run: |
+          "$HOME/.local/bin/uv" pip install --quiet --system \
+            -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cu128 \
+            --index-strategy unsafe-best-match
+
+      - name: Verify key dependency imports
+        run: |
+          python -u - <<'PY'
+          import gradio
+          import huggingface_hub
+          import librosa
+          import numpy
+          import scipy
+          import soundfile
+          import torch
+          import torchaudio
+          import torchcrepe
+          import torchfcpe
+          import torchvision
+          import transformers
+
+          print("torch:", torch.__version__)
+          print("torchaudio:", torchaudio.__version__)
+          print("torchvision:", torchvision.__version__)
+          print("numpy:", numpy.__version__)
+          print("scipy:", scipy.__version__)
+          print("librosa:", librosa.__version__)
+          print("gradio:", gradio.__version__)
+          print("transformers:", transformers.__version__)
+          print("huggingface_hub:", huggingface_hub.__version__)
+          print("Full Colab dependency import smoke passed.")
+          PY
+
+      - name: Prepare application config
+        run: cp -n assets/config_template.json assets/config.json
+
+      - name: Import CEVC tab modules
+        run: |
+          python -u - <<'PY'
+          print("Importing CEVC tabs...", flush=True)
+          from tabs.cevc.cevc import cevc_tab
+          from tabs.cevc2b.lab import cevc2b_lab_tab
+          print("CEVC tab modules imported successfully.", flush=True)
+          PY
+
+      - name: Import heavy Adapter v2 training path
+        run: |
+          python -u - <<'PY'
+          print("Importing the same heavy Adapter v2 path used by the button...", flush=True)
+          from rvc.train.cevc.data import CEVCTextAudioLoader
+          from rvc.train.cevc.train_adapter_v2 import train_adapter_v2
+          from rvc.train.cevc.adapter_v2_batch_probe import probe_adapter_v2_batch_size
+          from rvc.train.cevc.train_adapter_v2_auto import train_adapter_v2_auto
+          print("Heavy Adapter v2 imports passed, including legacy mel_processing resolution.", flush=True)
+          PY
+
+      - name: Discover CEVC files through a Drive-style symlink
+        run: |
+          python -u - <<'PY'
+          import tempfile
+          from pathlib import Path
+
+          from tabs.cevc.cevc import LOGS, _adapters, _indexes, _voice_models
+
+          LOGS.mkdir(parents=True, exist_ok=True)
+          with tempfile.TemporaryDirectory() as directory:
+              drive_folder = Path(directory)
+              (drive_folder / "egor_200e_1800s.pth").touch()
+              (drive_folder / "egor.index").touch()
+              (drive_folder / "egor.cevc.pth").touch()
+
+              link = LOGS / "drive_symlink_smoke"
+              link.symlink_to(drive_folder, target_is_directory=True)
+              try:
+                  assert "logs/drive_symlink_smoke/egor_200e_1800s.pth" in _voice_models()
+                  assert "logs/drive_symlink_smoke/egor.index" in _indexes()
+                  assert "logs/drive_symlink_smoke/egor.cevc.pth" in _adapters()
+              finally:
+                  link.unlink()
+
+          print("CEVC discovered model, index and adapter through a symlink.")
+          PY
+
+      - name: Build CEVC Gradio tabs
+        run: |
+          python -u - <<'PY'
+          import gradio as gr
+          from tabs.cevc.cevc import cevc_tab
+          from tabs.cevc2b.lab import cevc2b_lab_tab
+
+          print("Constructing CEVC Gradio components...", flush=True)
+          with gr.Blocks():
+              cevc_tab()
+              cevc2b_lab_tab()
+          print("CEVC Gradio tabs constructed successfully.", flush=True)
+          PY
+
+      - name: Run CEVC 2B preparation and critic button through Gradio postprocess
+        run: |
+          python -u - <<'PY'
+          import asyncio
+          import json
+          import shutil
+          import tempfile
+          from pathlib import Path
+
+          import gradio as gr
+          import numpy as np
+          import soundfile as sf
+          from gradio import processing_utils
+          from gradio.context import LocalContext
+
+          from tabs.cevc2b.lab import LOGS, _prepare, _train_critic
+
+          external = Path.home() / "cevc2b_drive_smoke"
+          shutil.rmtree(external, ignore_errors=True)
+          audio_dir = external / "sliced_audios_16k"
+          expressive_dir = external / "expressive"
+          audio_dir.mkdir(parents=True)
+          expressive_dir.mkdir(parents=True)
+          records = []
+          sample_rate = 16000
+          time = np.arange(6400, dtype=np.float32) / sample_rate
+          feature_centers = {
+              "clean": np.array([0.0, 1.0, 1.2, -0.8, -0.5], dtype=np.float32),
+              "mixed": np.array([0.1, 0.1, 0.0, 0.1, 0.2], dtype=np.float32),
+              "rough": np.array([0.2, -0.8, -1.0, 1.0, 1.0], dtype=np.float32),
+          }
+          for label, source_index in (("clean", 0), ("mixed", 1), ("rough", 2)):
+              for segment in range(4):
+                  name = f"0_{source_index}_{segment}.wav"
+                  frequency = 160 + source_index * 25
+                  audio = (
+                      0.13 * np.sin(2 * np.pi * frequency * time)
+                      + 0.02 * np.sin(2 * np.pi * frequency * 2 * time)
+                  ).astype(np.float32)
+                  if label == "mixed":
+                      audio += 0.007 * np.random.default_rng(segment).standard_normal(time.size)
+                      audio += 0.01 * np.sin(2 * np.pi * frequency * 0.5 * time)
+                  if label == "rough":
+                      audio += 0.018 * np.random.default_rng(segment + 100).standard_normal(time.size)
+                      audio += 0.025 * np.sin(2 * np.pi * frequency * 0.5 * time)
+                  sf.write(audio_dir / name, audio, sample_rate, subtype="FLOAT")
+                  features = np.tile(feature_centers[label], (40, 1))
+                  np.save(expressive_dir / f"{name}.npy", features, allow_pickle=False)
+                  records.append(
+                      {
+                          "file": name,
+                          "source_index": source_index,
+                          "source_filename": f"{label}.wav",
+                          "label_hint": label,
+                          "frames": 40,
+                      }
+                  )
+          (external / "cevc_expressive_manifest.json").write_text(
+              json.dumps({"files": records}), encoding="utf-8"
+          )
+
+          LOGS.mkdir(parents=True, exist_ok=True)
+          link = LOGS / "cevc2b_drive_smoke"
+          if link.exists() or link.is_symlink():
+              link.unlink()
+          link.symlink_to(external, target_is_directory=True)
+          try:
+              prepared = _prepare("logs/cevc2b_drive_smoke", 25, 1234)
+              status, manifest, profile, clean, spectral, mixed, rough = prepared
+              assert "Подготовка завершена" in status, status
+              assert "Следующий шаг" in status, status
+              assert (external / "cevc2b" / "experiment2b_manifest.json").is_file()
+              assert (external / "cevc2b" / "real_profile" / "real_roughness_profile.npz").is_file()
+              preparation_files = [manifest, profile, clean, spectral, mixed, rough]
+              for path in preparation_files:
+                  resolved = Path(path).resolve()
+                  assert resolved.is_file(), resolved
+                  assert resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+                  assert not resolved.is_relative_to(external.resolve())
+
+              trained = _train_critic(
+                  "logs/cevc2b_drive_smoke",
+                  1,
+                  6,
+                  0.0005,
+                  0.25,
+                  32,
+                  1234,
+              )
+              critic_status, checkpoint, summary, history = trained
+              assert "Обучение завершено" in critic_status, critic_status
+              assert "CRITIC" in critic_status, critic_status
+              critic_files = [checkpoint, summary, history]
+              for path in critic_files:
+                  resolved = Path(path).resolve()
+                  assert resolved.is_file(), resolved
+                  assert resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+                  assert not resolved.is_relative_to(external.resolve())
+
+              persistent_summary = external / "cevc2b" / "critic" / "critic_summary.json"
+              summary_payload = json.loads(persistent_summary.read_text(encoding="utf-8"))
+              assert summary_payload["format"] == "cevc-critic-human-summary-v1"
+              assert "accepted_for_adapter_v2" in summary_payload
+              assert "explanation_ru" in summary_payload
+
+              with gr.Blocks() as blocks:
+                  preparation_outputs = [gr.File(), gr.File(), *[gr.Audio() for _ in range(4)]]
+                  critic_outputs = [gr.File(), gr.File(), gr.File()]
+              blocks.has_launched = True
+              token = LocalContext.blocks.set(blocks)
+
+              async def verify_gradio_outputs():
+                  for component, value in zip(preparation_outputs, preparation_files):
+                      payload = component.postprocess(value)
+                      cached = await processing_utils.async_move_files_to_cache(
+                          payload, component, postprocess=True
+                      )
+                      assert cached["path"]
+                  for component, value in zip(critic_outputs, critic_files):
+                      payload = component.postprocess(value)
+                      cached = await processing_utils.async_move_files_to_cache(
+                          payload, component, postprocess=True
+                      )
+                      assert cached["path"]
+
+              try:
+                  asyncio.run(verify_gradio_outputs())
+              finally:
+                  LocalContext.blocks.reset(token)
+          finally:
+              if link.exists() or link.is_symlink():
+                  link.unlink()
+              shutil.rmtree(external, ignore_errors=True)
+
+          print("CEVC 2B preparation and critic button passed real Gradio postprocessing.")
+          PY
+
+  download-and-load-rmvpe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install smoke-test dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet tqdm requests numpy librosa
+          python -m pip install --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download predictor and ContentVec prerequisites through official HTTP route
+        run: |
+          python -u - <<'PY'
+          from rvc.lib.tools.prerequisites_download import prequisites_download_pipeline
+
+          prequisites_download_pipeline(
+              pretraineds_hifigan=False,
+              models=True,
+              exe=False,
+          )
+          print("Official HTTP prerequisite download passed.")
+          PY
+
+      - name: Verify downloaded file sizes
+        run: |
+          python -u - <<'PY'
+          from pathlib import Path
+
+          expected = {
+              "rvc/models/predictors/rmvpe.pt": 10 * 1024 * 1024,
+              "rvc/models/predictors/fcpe.pt": 1 * 1024 * 1024,
+              "rvc/models/embedders/contentvec/pytorch_model.bin": 10 * 1024 * 1024,
+              "rvc/models/embedders/contentvec/config.json": 1,
+          }
+
+          for name, minimum in expected.items():
+              path = Path(name)
+              if not path.is_file():
+                  raise SystemExit(f"Missing prerequisite: {name}")
+              size = path.stat().st_size
+              print(f"{name}: {size} bytes ({size / 1024**2:.2f} MiB)")
+              if size < minimum:
+                  raise SystemExit(
+                      f"Prerequisite is too small: {name}: {size} < {minimum}"
+                  )
+          PY
+
+      - name: Load RMVPE checkpoint on CPU
+        run: |
+          python -u - <<'PY'
+          from rvc.lib.predictors.RMVPE import RMVPE0Predictor
+
+          predictor = RMVPE0Predictor(
+              "rvc/models/predictors/rmvpe.pt",
+              device="cpu",
+          )
+          print("RMVPE checkpoint loaded successfully on CPU.")
+          print(type(predictor.model).__name__)
+          PY
