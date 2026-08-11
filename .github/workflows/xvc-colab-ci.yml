@@ -32,6 +32,19 @@ jobs:
       - run: pytest -q xvc_colab/tests/test_contract.py
       - run: python -m json.tool xvc_colab/X_VC_Colab.ipynb >/dev/null
 
+  gradio-share-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install the same Gradio version used by X-VC Colab
+        run: python -m pip install -q gradio==5.23.0
+      - name: Create one public Gradio link, verify it, then close
+        run: timeout 120s python xvc_colab/tests/smoke_gradio_share.py
+
   dependency-and-import-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 40
