@@ -34,16 +34,21 @@ jobs:
 
   gradio-share-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install the same Gradio version used by X-VC Colab
-        run: python -m pip install -q gradio==5.23.0
-      - name: Create one public Gradio link, verify it, then close
-        run: timeout 120s python xvc_colab/tests/smoke_gradio_share.py
+
+      - name: Pull official Google Colab runtime image
+        run: docker pull us-docker.pkg.dev/colab-images/public/cpu-runtime
+
+      - name: Create exactly one Gradio public link inside official Colab runtime
+        run: |
+          docker run --rm \
+            --entrypoint /bin/bash \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            us-docker.pkg.dev/colab-images/public/cpu-runtime \
+            -lc 'python -m pip install -q gradio==5.23.0 requests && timeout 120s python xvc_colab/tests/smoke_gradio_share.py'
 
   dependency-and-import-smoke:
     runs-on: ubuntu-latest
