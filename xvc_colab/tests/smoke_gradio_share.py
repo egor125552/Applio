@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-shot smoke test for Gradio's public share tunnel.
 
-This intentionally calls demo.launch() exactly once. If a public gradio.live
-URL is created, the test prints it and immediately closes the demo.
+The test creates one public share link. If a public gradio.live URL is created,
+it prints it and immediately closes the demo.
 """
 
 from __future__ import annotations
