@@ -4,7 +4,12 @@ This intentionally performs real network downloads. It is used both directly
 on a clean runner and from the repository Docker image.
 """
 
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 
