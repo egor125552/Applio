@@ -34,7 +34,7 @@ def list_files_with_retry(repo_id: str) -> set[str]:
             return set(api.list_repo_files(repo_id=repo_id, repo_type="model"))
         except Exception as exc:
             error = exc
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
     raise RuntimeError(f"Cannot inspect {repo_id}: {error}")
 
 

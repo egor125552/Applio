@@ -132,7 +132,9 @@ def download_mapping_files(file_mapping_list, global_bar):
                 if should_download(remote_folder, file, destination_path):
                     url = get_download_url(remote_folder, file)
                     futures.append(
-                        executor.submit(download_file, url, destination_path, global_bar)
+                        executor.submit(
+                            download_file, url, destination_path, global_bar
+                        )
                     )
         for future in futures:
             future.result()

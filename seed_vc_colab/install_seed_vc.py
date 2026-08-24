@@ -33,10 +33,16 @@ def clone_pinned_seed_vc(destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
 
-    run([
-        "git", "clone", "--filter=blob:none", "--no-checkout",
-        UPSTREAM_REPOSITORY, str(destination),
-    ])
+    run(
+        [
+            "git",
+            "clone",
+            "--filter=blob:none",
+            "--no-checkout",
+            UPSTREAM_REPOSITORY,
+            str(destination),
+        ]
+    )
     run(["git", "fetch", "--depth", "1", "origin", UPSTREAM_COMMIT], cwd=destination)
     run(["git", "checkout", "--detach", UPSTREAM_COMMIT], cwd=destination)
 
@@ -48,11 +54,31 @@ def clone_pinned_seed_vc(destination: Path) -> None:
 
 
 def install_python_packages(requirements_path: Path) -> None:
-    run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "pip", "setuptools", "wheel"])
-    run([
-        sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
-        "-r", str(requirements_path),
-    ])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--upgrade",
+            "pip",
+            "setuptools",
+            "wheel",
+        ]
+    )
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--no-cache-dir",
+            "-r",
+            str(requirements_path),
+        ]
+    )
 
 
 def check_runtime() -> None:

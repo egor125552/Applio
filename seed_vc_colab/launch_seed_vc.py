@@ -54,7 +54,9 @@ def main() -> None:
     from app_vc_v2 import main as seed_vc_main
 
     print("\nЗагружаю модели Seed-VC V2.")
-    print("После загрузки Gradio напечатает публичную ссылку вида https://....gradio.live")
+    print(
+        "После загрузки Gradio напечатает публичную ссылку вида https://....gradio.live"
+    )
     seed_vc_main(
         SimpleNamespace(
             compile=args.compile,

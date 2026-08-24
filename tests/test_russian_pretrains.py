@@ -19,7 +19,9 @@ from rvc.lib.tools.pretrained_selector import pretrained_selector
 
 def load_and_check(path: Path):
     assert path.is_file(), f"Missing downloaded pretrain: {path}"
-    assert path.stat().st_size > 1_000_000, f"Downloaded file is suspiciously small: {path}"
+    assert (
+        path.stat().st_size > 1_000_000
+    ), f"Downloaded file is suspiciously small: {path}"
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     assert isinstance(checkpoint, dict) and checkpoint, f"Invalid checkpoint: {path}"
     print(f"OK {path.name}: {path.stat().st_size:,} bytes, keys={list(checkpoint)[:8]}")
@@ -38,9 +40,7 @@ def main():
 
     # Keep the integration test focused on the four fork-specific files. The
     # production downloader still downloads the normal 32k and RefineGAN files.
-    downloader.pretraineds_hifigan_list = [
-        ("pretrained_v2/", list(expected_names))
-    ]
+    downloader.pretraineds_hifigan_list = [("pretrained_v2/", list(expected_names))]
     downloader.pretraineds_refinegan_list = []
 
     downloader.prequisites_download_pipeline(
@@ -76,7 +76,9 @@ def main():
     )
     load_and_check(missing_path)
 
-    print("Russian Snowie V3.1 40k/48k pretrains downloaded, imported, selected, and repaired successfully.")
+    print(
+        "Russian Snowie V3.1 40k/48k pretrains downloaded, imported, selected, and repaired successfully."
+    )
 
 
 if __name__ == "__main__":

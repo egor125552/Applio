@@ -46,11 +46,17 @@ for name in packages + model_modules:
     importlib.import_module(name)
 
 import yaml
-config = yaml.safe_load((repo / "configs/v2/vc_wrapper.yaml").read_text(encoding="utf-8"))
+
+config = yaml.safe_load(
+    (repo / "configs/v2/vc_wrapper.yaml").read_text(encoding="utf-8")
+)
 assert config["_target_"] == "modules.v2.vc_wrapper.VoiceConversionWrapper"
 assert config["cfm"]["_target_"] == "modules.v2.cfm.CFM"
 assert config["ar"]["_target_"] == "modules.v2.ar.NaiveWrapper"
-assert config["vocoder"]["pretrained_model_name_or_path"] == "nvidia/bigvgan_v2_22khz_80band_256x"
+assert (
+    config["vocoder"]["pretrained_model_name_or_path"]
+    == "nvidia/bigvgan_v2_22khz_80band_256x"
+)
 
 import gradio as gr
 
