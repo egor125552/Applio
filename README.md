@@ -27,10 +27,13 @@
   •
   <a href="https://applio.org/playground" target="_blank">🎮 Playground</a>
   •
-  <a href="https://colab.research.google.com/github/iahispano/applio/blob/main/assets/Applio.ipynb" target="_blank">🔎 Google Colab (UI)</a>
+  <a href="https://colab.research.google.com/github/egor125552/applio/blob/main/assets/Applio.ipynb" target="_blank">🔎 Google Colab (UI)</a>
   •
   <a href="https://colab.research.google.com/github/iahispano/applio/blob/main/assets/Applio_NoUI.ipynb" target="_blank">🔎 Google Colab (No UI)</a>
 </p>
+
+> [!NOTE]  
+> This fork uses Snowie V3.1 Russian pretrained checkpoints by default for HiFi-GAN training at 40 kHz and 48 kHz. The checkpoints keep Applio's standard `f0D40k.pth`, `f0G40k.pth`, `f0D48k.pth`, and `f0G48k.pth` filenames, so no manual pretrained-path selection is needed.
 
 > [!NOTE]  
 > Applio will no longer receive frequent updates. Going forward, development will focus mainly on security patches, dependency updates, and occasional feature improvements. This is because the project is already stable and mature with limited room for further improvements.
@@ -86,7 +89,7 @@ For more detailed instructions, visit the [documentation](https://docs.applio.or
 
 Applio is made possible thanks to these projects and their references:
 
-- [gradio-screen-recorder](https://huggingface.co/spaces/gstaff/gradio-screen-recorder) by gstaff
+- [gradio-screen-recorder](https://github.com/gstaff/gradio-screen-recorder) by gstaff
 - [rvc-cli](https://github.com/blaisewf/rvc-cli) by blaisewf
 
 ### Contributors
