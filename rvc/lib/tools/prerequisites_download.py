@@ -70,6 +70,16 @@ def should_download(remote_folder, file, destination_path):
     return not os.path.exists(destination_path)
 
 
+def any_downloads_pending(file_list):
+    for remote_folder, files in file_list:
+        local_folder = folder_mapping_list.get(remote_folder, "")
+        for file in files:
+            destination_path = os.path.join(local_folder, file)
+            if should_download(remote_folder, file, destination_path):
+                return True
+    return False
+
+
 def get_file_size_if_missing(file_list):
     total_size = 0
     for remote_folder, files in file_list:
@@ -78,9 +88,14 @@ def get_file_size_if_missing(file_list):
             destination_path = os.path.join(local_folder, file)
             if should_download(remote_folder, file, destination_path):
                 url = get_download_url(remote_folder, file)
-                response = requests.head(url, allow_redirects=True, timeout=60)
-                response.raise_for_status()
-                total_size += int(response.headers.get("content-length", 0))
+                try:
+                    response = requests.head(url, allow_redirects=True, timeout=60)
+                    response.raise_for_status()
+                    total_size += int(response.headers.get("content-length", 0))
+                except (requests.RequestException, ValueError):
+                    # Some Hugging Face/Xet redirects do not expose a useful
+                    # Content-Length. The real GET below is authoritative.
+                    pass
     return total_size
 
 
@@ -161,15 +176,26 @@ def calculate_total_size(pretraineds_hifigan, models, exe):
 
 
 def prequisites_download_pipeline(pretraineds_hifigan, models, exe):
+    requested_lists = []
+    if models:
+        requested_lists.extend([models_list, embedders_list])
+    if exe and os.name == "nt":
+        requested_lists.append(executables_list)
+    if pretraineds_hifigan:
+        requested_lists.extend([pretraineds_hifigan_list, pretraineds_refinegan_list])
+
+    if not any(any_downloads_pending(file_list) for file_list in requested_lists):
+        return
+
     total_size = calculate_total_size(
         pretraineds_hifigan_list if pretraineds_hifigan else [], models, exe
     )
 
-    if total_size <= 0:
-        return
-
     with tqdm(
-        total=total_size, unit="iB", unit_scale=True, desc="Downloading all files"
+        total=total_size or None,
+        unit="iB",
+        unit_scale=True,
+        desc="Downloading all files",
     ) as global_bar:
         if models:
             download_mapping_files(models_list, global_bar)
