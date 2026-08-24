@@ -64,9 +64,9 @@ def get_download_url(remote_folder, file):
 def should_download(remote_folder, file, destination_path):
     # Existing Applio installations may already contain the old English 40/48k
     # pretrains under the same filenames. Until the marker exists, replace those
-    # files once with Snowie V3.1. Fresh installs follow the same path.
+    # files once with Snowie V3.1. If one is later deleted, restore just that file.
     if remote_folder == "pretrained_v2/" and file in SNOWIE_V31_URLS:
-        return not os.path.exists(SNOWIE_MARKER)
+        return not os.path.exists(SNOWIE_MARKER) or not os.path.exists(destination_path)
     return not os.path.exists(destination_path)
 
 
