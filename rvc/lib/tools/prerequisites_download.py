@@ -1,9 +1,22 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
+
 import requests
+from tqdm import tqdm
 
 url_base = "https://huggingface.co/IAHispano/Applio/resolve/main/Resources"
+
+# Snowie V3.1 is a Russian RVC pretrain. Keep Applio's standard local
+# filenames so the rest of the training UI can continue to auto-select them.
+SNOWIE_V31_URLS = {
+    "f0D40k.pth": "https://huggingface.co/MUSTAR/SnowieV3.1-40k/resolve/main/D_SnowieV3.1_40k.pth",
+    "f0G40k.pth": "https://huggingface.co/MUSTAR/SnowieV3.1-40k/resolve/main/G_SnowieV3.1_40k.pth",
+    "f0D48k.pth": "https://huggingface.co/MUSTAR/SnowieV3.1-48k/resolve/main/D_SnowieV3.1_48k.pth",
+    "f0G48k.pth": "https://huggingface.co/MUSTAR/SnowieV3.1-48k/resolve/main/G_SnowieV3.1_48k.pth",
+}
+SNOWIE_MARKER = os.path.join(
+    "rvc", "models", "pretraineds", "hifi-gan", ".snowie-v3.1-40k-48k"
+)
 
 pretraineds_hifigan_list = [
     (
@@ -31,9 +44,7 @@ pretraineds_refinegan_list = [
 ]
 models_list = [("predictors/", ["rmvpe.pt", "fcpe.pt"])]
 embedders_list = [("embedders/contentvec/", ["pytorch_model.bin", "config.json"])]
-executables_list = [
-    ("", ["ffmpeg.exe", "ffprobe.exe"]),
-]
+executables_list = [("", ["ffmpeg.exe", "ffprobe.exe"])]
 
 folder_mapping_list = {
     "pretrained_v2/": "rvc/models/pretraineds/hifi-gan/",
@@ -44,59 +55,81 @@ folder_mapping_list = {
 }
 
 
+def get_download_url(remote_folder, file):
+    if remote_folder == "pretrained_v2/" and file in SNOWIE_V31_URLS:
+        return SNOWIE_V31_URLS[file]
+    return f"{url_base}/{remote_folder}{file}"
+
+
+def should_download(remote_folder, file, destination_path):
+    # Existing Applio installations may already contain the old English 40/48k
+    # pretrains under the same filenames. Until the marker exists, replace those
+    # files once with Snowie V3.1. Fresh installs follow the same path.
+    if remote_folder == "pretrained_v2/" and file in SNOWIE_V31_URLS:
+        return not os.path.exists(SNOWIE_MARKER)
+    return not os.path.exists(destination_path)
+
+
 def get_file_size_if_missing(file_list):
-    """
-    Calculate the total size of files to be downloaded only if they do not exist locally.
-    """
     total_size = 0
     for remote_folder, files in file_list:
         local_folder = folder_mapping_list.get(remote_folder, "")
         for file in files:
             destination_path = os.path.join(local_folder, file)
-            if not os.path.exists(destination_path):
-                url = f"{url_base}/{remote_folder}{file}"
-                response = requests.head(url)
+            if should_download(remote_folder, file, destination_path):
+                url = get_download_url(remote_folder, file)
+                response = requests.head(url, allow_redirects=True, timeout=60)
+                response.raise_for_status()
                 total_size += int(response.headers.get("content-length", 0))
     return total_size
 
 
 def download_file(url, destination_path, global_bar):
-    """
-    Download a file from the given URL to the specified destination path,
-    updating the global progress bar as data is downloaded.
-    """
-
     dir_name = os.path.dirname(destination_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    response = requests.get(url, stream=True)
-    block_size = 1024
-    with open(destination_path, "wb") as file:
-        for data in response.iter_content(block_size):
-            file.write(data)
-            global_bar.update(len(data))
+
+    temp_path = destination_path + ".part"
+    response = requests.get(url, stream=True, timeout=300)
+    response.raise_for_status()
+    block_size = 1024 * 1024
+
+    try:
+        with open(temp_path, "wb") as file:
+            for data in response.iter_content(block_size):
+                if not data:
+                    continue
+                file.write(data)
+                global_bar.update(len(data))
+        os.replace(temp_path, destination_path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def download_mapping_files(file_mapping_list, global_bar):
-    """
-    Download all files in the provided file mapping list using a thread pool executor,
-    and update the global progress bar as downloads progress.
-    """
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
         for remote_folder, file_list in file_mapping_list:
             local_folder = folder_mapping_list.get(remote_folder, "")
             for file in file_list:
                 destination_path = os.path.join(local_folder, file)
-                if not os.path.exists(destination_path):
-                    url = f"{url_base}/{remote_folder}{file}"
+                if should_download(remote_folder, file, destination_path):
+                    url = get_download_url(remote_folder, file)
                     futures.append(
-                        executor.submit(
-                            download_file, url, destination_path, global_bar
-                        )
+                        executor.submit(download_file, url, destination_path, global_bar)
                     )
         for future in futures:
             future.result()
+
+
+def mark_snowie_installed():
+    base_folder = folder_mapping_list["pretrained_v2/"]
+    expected = [os.path.join(base_folder, name) for name in SNOWIE_V31_URLS]
+    if all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in expected):
+        os.makedirs(os.path.dirname(SNOWIE_MARKER), exist_ok=True)
+        with open(SNOWIE_MARKER, "w", encoding="utf-8") as marker:
+            marker.write("Snowie V3.1 Russian pretrains installed for 40k and 48k.\n")
 
 
 def split_pretraineds(pretrained_list):
@@ -115,14 +148,7 @@ def split_pretraineds(pretrained_list):
 pretraineds_hifigan_list, _ = split_pretraineds(pretraineds_hifigan_list)
 
 
-def calculate_total_size(
-    pretraineds_hifigan,
-    models,
-    exe,
-):
-    """
-    Calculate the total size of all files to be downloaded based on selected categories.
-    """
+def calculate_total_size(pretraineds_hifigan, models, exe):
     total_size = 0
     if models:
         total_size += get_file_size_if_missing(models_list)
@@ -134,34 +160,26 @@ def calculate_total_size(
     return total_size
 
 
-def prequisites_download_pipeline(
-    pretraineds_hifigan,
-    models,
-    exe,
-):
-    """
-    Manage the download pipeline for different categories of files.
-    """
+def prequisites_download_pipeline(pretraineds_hifigan, models, exe):
     total_size = calculate_total_size(
-        pretraineds_hifigan_list if pretraineds_hifigan else [],
-        models,
-        exe,
+        pretraineds_hifigan_list if pretraineds_hifigan else [], models, exe
     )
 
-    if total_size > 0:
-        with tqdm(
-            total=total_size, unit="iB", unit_scale=True, desc="Downloading all files"
-        ) as global_bar:
-            if models:
-                download_mapping_files(models_list, global_bar)
-                download_mapping_files(embedders_list, global_bar)
-            if exe:
-                if os.name == "nt":
-                    download_mapping_files(executables_list, global_bar)
-                else:
-                    print("No executables needed")
-            if pretraineds_hifigan:
-                download_mapping_files(pretraineds_hifigan_list, global_bar)
-                download_mapping_files(pretraineds_refinegan_list, global_bar)
-    else:
-        pass
+    if total_size <= 0:
+        return
+
+    with tqdm(
+        total=total_size, unit="iB", unit_scale=True, desc="Downloading all files"
+    ) as global_bar:
+        if models:
+            download_mapping_files(models_list, global_bar)
+            download_mapping_files(embedders_list, global_bar)
+        if exe:
+            if os.name == "nt":
+                download_mapping_files(executables_list, global_bar)
+            else:
+                print("No executables needed")
+        if pretraineds_hifigan:
+            download_mapping_files(pretraineds_hifigan_list, global_bar)
+            mark_snowie_installed()
+            download_mapping_files(pretraineds_refinegan_list, global_bar)
