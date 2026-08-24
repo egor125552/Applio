@@ -15,7 +15,10 @@ RUN apt update && apt install -y \
     libportaudio2
 RUN rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/IAHispano/Applio.git .
+# Build the image from the checked-out repository instead of cloning the
+# upstream IAHispano repository. This makes fork-specific downloader changes
+# available inside Docker too.
+COPY . .
 
 RUN python3 -m venv .venv
 

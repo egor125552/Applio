@@ -1,0 +1,82 @@
+name: Russian pretrains CI
+
+on:
+  push:
+    branches:
+      - russian-default-pretrains
+    paths:
+      - "assets/Applio.ipynb"
+      - "rvc/lib/tools/prerequisites_download.py"
+      - "rvc/lib/tools/pretrained_selector.py"
+      - "Dockerfile"
+      - "Dockerfile_cuda"
+      - "tests/test_russian_pretrains.py"
+      - ".github/workflows/russian-pretrains-ci.yml"
+  pull_request:
+    paths:
+      - "assets/Applio.ipynb"
+      - "rvc/lib/tools/prerequisites_download.py"
+      - "rvc/lib/tools/pretrained_selector.py"
+      - "Dockerfile"
+      - "Dockerfile_cuda"
+      - "tests/test_russian_pretrains.py"
+      - ".github/workflows/russian-pretrains-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  native-download-and-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Colab notebook contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          notebook = json.loads(Path("assets/Applio.ipynb").read_text(encoding="utf-8"))
+          source = "\n".join(
+              line
+              for cell in notebook["cells"]
+              for line in cell.get("source", [])
+          )
+          assert "https://github.com/egor125552/Applio.git" in source
+          assert 'repo_branch = "main"' in source
+          assert "f0D40k.pth" in source
+          assert "f0G40k.pth" in source
+          assert "f0D48k.pth" in source
+          assert "f0G48k.pth" in source
+          assert "IAHispano/Applio" not in source
+          print("Colab notebook points to the fork and verifies all four Russian pretrains.")
+          PY
+
+      - name: Install smoke-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests tqdm
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download and import Snowie 40k/48k pretrains
+        run: python tests/test_russian_pretrains.py
+
+  docker-download-and-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the official Applio Dockerfile from this fork
+        run: docker build -t applio-russian-pretrains .
+
+      - name: Download and import Snowie pretrains inside Docker
+        run: |
+          docker run --rm \
+            --entrypoint python3 \
+            applio-russian-pretrains \
+            tests/test_russian_pretrains.py
