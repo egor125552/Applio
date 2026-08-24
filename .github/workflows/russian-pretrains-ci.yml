@@ -5,6 +5,7 @@ on:
     branches:
       - russian-default-pretrains
     paths:
+      - "assets/Applio.ipynb"
       - "rvc/lib/tools/prerequisites_download.py"
       - "rvc/lib/tools/pretrained_selector.py"
       - "Dockerfile"
@@ -13,6 +14,7 @@ on:
       - ".github/workflows/russian-pretrains-ci.yml"
   pull_request:
     paths:
+      - "assets/Applio.ipynb"
       - "rvc/lib/tools/prerequisites_download.py"
       - "rvc/lib/tools/pretrained_selector.py"
       - "Dockerfile"
@@ -31,6 +33,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Validate Colab notebook contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          notebook = json.loads(Path("assets/Applio.ipynb").read_text(encoding="utf-8"))
+          source = "\n".join(
+              line
+              for cell in notebook["cells"]
+              for line in cell.get("source", [])
+          )
+          assert "https://github.com/egor125552/Applio.git" in source
+          assert 'repo_branch = "main"' in source
+          assert "f0D40k.pth" in source
+          assert "f0G40k.pth" in source
+          assert "f0D48k.pth" in source
+          assert "f0G48k.pth" in source
+          assert "IAHispano/Applio" not in source
+          print("Colab notebook points to the fork and verifies all four Russian pretrains.")
+          PY
 
       - name: Install smoke-test dependencies
         run: |
